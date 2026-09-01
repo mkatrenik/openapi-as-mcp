@@ -92,7 +92,7 @@ pub enum Command {
 /// Runs one command and prints its result. `Serve` never reaches here — `main` handles it.
 pub async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let config = cli.config.resolve().context("invalid configuration")?;
-    let apis = spec::load_all(&config.specs, config.timeout).await?;
+    let apis = spec::load_all(&config.specs(), config.timeout).await?;
     let server = OpenApiMcp::new(&config, apis)?;
     let compact = cli.output.compact;
 

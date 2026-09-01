@@ -1,4 +1,4 @@
-BINARIES := recipe-run-debug-mcp openapi-as-mcp
+BINARIES := openapi-as-mcp
 INSTALL_DIR := $(HOME)/.local/bin
 
 .PHONY: install

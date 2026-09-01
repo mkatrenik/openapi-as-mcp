@@ -4,6 +4,9 @@
 //! `operationId`, with a JSON Schema built from its parameters and request body. Nothing about the
 //! API is compiled in, so a new endpoint appears the moment the document does.
 //!
+//! Several documents can be served at once, each with its own base URL, credentials and filters —
+//! see `src/config.rs` for the TOML file that describes them.
+//!
 //! `serve` runs the MCP server. Its transport is stdio, which means **stdout belongs to the
 //! JSON-RPC protocol**: all diagnostics go to stderr, and a stray `println!` corrupts the stream.
 //! Every other subcommand is an ordinary CLI run — see `src/cli.rs`, the only module allowed to
@@ -47,14 +50,13 @@ async fn main() -> anyhow::Result<ExitCode> {
     }
 
     let config = cli.config.resolve().context("invalid configuration")?;
-    let apis = spec::load_all(&config.specs, config.timeout).await?;
+    let apis = spec::load_all(&config.specs(), config.timeout).await?;
     let server = OpenApiMcp::new(&config, apis)?;
 
     tracing::info!(
-        base_url = %server.base_url(),
+        documents = config.apis.len(),
+        base_urls = ?server.base_urls(),
         tools = server.tools().len(),
-        authenticated = !config.headers.is_empty(),
-        read_only = config.read_only,
         "starting openapi-as-mcp"
     );
 

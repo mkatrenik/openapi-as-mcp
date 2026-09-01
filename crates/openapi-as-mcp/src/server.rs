@@ -16,67 +16,91 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use serde_json::{Map, Value, json};
 
-use crate::config::Config;
+use crate::config::{ApiConfig, Config};
 use crate::exec::{CallError, Executor};
 use crate::spec::{Api, Operation};
 
+/// One operation, plus which document it came from — the index into `executors`, which is what
+/// decides where the call goes and with which credentials.
+#[derive(Debug, Clone)]
+struct Bound {
+    operation: Operation,
+    api: usize,
+}
+
 #[derive(Debug)]
 pub struct OpenApiMcp {
-    executor: Executor,
+    /// Parallel to the documents, in config order.
+    executors: Vec<Executor>,
     tools: Vec<Tool>,
-    operations: HashMap<String, Operation>,
+    operations: HashMap<String, Bound>,
     instructions: String,
 }
 
 impl OpenApiMcp {
-    /// Builds the server from already-loaded documents. Fails only for things that make the whole
-    /// server useless: no base URL to send requests to, or no operations left after filtering.
+    /// Builds the server from already-loaded documents, one per `config.apis` in the same order.
+    /// Fails only for things that make the whole server useless: a document with no base URL to
+    /// send its requests to, or no operations left after filtering.
     pub fn new(config: &Config, apis: Vec<Api>) -> anyhow::Result<Self> {
-        let base_url = config
-            .base_url
-            .clone()
-            .or_else(|| apis.iter().find_map(|api| api.servers.first().cloned()))
-            .context(
-                "no base URL: the document declares no `servers`, so pass --base-url <URL> \
-                 (or set OAM_BASE_URL)",
-            )?;
+        assert_eq!(
+            config.apis.len(),
+            apis.len(),
+            "one loaded document per configured api"
+        );
 
         // Names are unique per document; two documents can still collide, so dedupe again here.
         let mut taken: BTreeMap<String, usize> = BTreeMap::new();
         let mut operations = HashMap::new();
         let mut tools = Vec::new();
+        let mut executors = Vec::with_capacity(apis.len());
         let mut skipped = 0usize;
 
-        for api in &apis {
+        for (index, (settings, api)) in config.apis.iter().zip(&apis).enumerate() {
+            let base_url = base_url_for(settings, api)?;
+
             for operation in &api.operations {
-                if !keep(config, operation) {
+                if !keep(settings, operation) {
                     skipped += 1;
                     continue;
                 }
                 let mut operation = operation.clone();
-                operation.name = unique(prefixed(config, &operation.name), &mut taken);
+                operation.name = unique(prefixed(settings, &operation.name), &mut taken);
                 tools.push(tool_for(&operation));
-                operations.insert(operation.name.clone(), operation);
+                operations.insert(
+                    operation.name.clone(),
+                    Bound {
+                        operation,
+                        api: index,
+                    },
+                );
             }
+
+            tracing::info!(
+                api = %settings.label,
+                base_url = %base_url,
+                read_only = settings.read_only,
+                authenticated = !settings.headers.is_empty(),
+                "serving document"
+            );
+            executors.push(Executor::new(settings, base_url)?);
         }
 
         if tools.is_empty() {
             bail!(
-                "no operations to serve: {} found, all filtered out by --read-only/--include/\
-                 --exclude",
+                "no operations to serve: {} found, all filtered out by read-only/include/exclude",
                 skipped
             );
         }
         tracing::info!(
             tools = tools.len(),
             skipped,
-            base_url = %base_url,
+            apis = apis.len(),
             "built tool set"
         );
 
         Ok(Self {
-            executor: Executor::new(config, base_url)?,
-            instructions: instructions(&apis, &tools),
+            instructions: instructions(config, &apis, &tools),
+            executors,
             tools,
             operations,
         })
@@ -87,16 +111,23 @@ impl OpenApiMcp {
     }
 
     pub fn operation(&self, name: &str) -> Option<&Operation> {
-        self.operations.get(name)
+        self.operations.get(name).map(|bound| &bound.operation)
     }
 
-    pub fn base_url(&self) -> &str {
-        self.executor.base_url()
+    /// Where one tool's requests go.
+    pub fn base_url_of(&self, name: &str) -> Option<&str> {
+        let bound = self.operations.get(name)?;
+        Some(self.executors[bound.api].base_url())
+    }
+
+    /// Every base URL being served, in config order.
+    pub fn base_urls(&self) -> Vec<&str> {
+        self.executors.iter().map(Executor::base_url).collect()
     }
 
     /// Runs one tool. Shared by the MCP handler and the CLI so the two can never drift.
     pub async fn call(&self, name: &str, arguments: Map<String, Value>) -> CallToolResult {
-        let Some(operation) = self.operations.get(name) else {
+        let Some(bound) = self.operations.get(name) else {
             let mut known: Vec<&str> = self.operations.keys().map(String::as_str).collect();
             known.sort_unstable();
             return CallToolResult::error(vec![ContentBlock::text(format!(
@@ -105,7 +136,10 @@ impl OpenApiMcp {
             ))]);
         };
 
-        match self.executor.call(operation, &arguments).await {
+        match self.executors[bound.api]
+            .call(&bound.operation, &arguments)
+            .await
+        {
             Ok(payload) => CallToolResult::structured(payload),
             // Everything the upstream API can do to us — a 404, a stale token, a bad argument —
             // is a *tool-level* error: the model should read the message and try again, not see
@@ -127,12 +161,12 @@ fn describe_error(err: &CallError) -> String {
         {
             Some(
                 "The API rejected the credentials. Restart the server with --token <TOKEN> or \
-                 OAM_TOKEN set.",
+                 OAM_TOKEN set, or fix this API's `token` in the config file.",
             )
         }
         CallError::Transport { .. } => Some(
-            "Check --base-url: it must be reachable from this machine, and it is what every tool \
-             call is sent to.",
+            "Check the base URL: it must be reachable from this machine, and it is where this \
+             tool's calls are sent.",
         ),
         _ => None,
     };
@@ -143,13 +177,13 @@ fn describe_error(err: &CallError) -> String {
     }
 }
 
-fn keep(config: &Config, operation: &Operation) -> bool {
+fn keep(config: &ApiConfig, operation: &Operation) -> bool {
     if config.read_only && !operation.is_read_only() {
         return false;
     }
     // Each candidate is matched on its own rather than as one joined string, so an anchored
-    // pattern means what it looks like: `--exclude '^/admin'` filters by path, `--exclude
-    // '^delete'` by tool name, and neither has to know where the other sits in a haystack.
+    // pattern means what it looks like: `exclude = ['^/admin']` filters by path, `'^delete'` by
+    // tool name, and neither has to know where the other sits in a haystack.
     let candidates = [
         operation.name.as_str(),
         operation.method.as_str(),
@@ -167,7 +201,7 @@ fn keep(config: &Config, operation: &Operation) -> bool {
     !matches(&config.exclude)
 }
 
-fn prefixed(config: &Config, name: &str) -> String {
+fn prefixed(config: &ApiConfig, name: &str) -> String {
     match &config.tool_prefix {
         Some(prefix) => format!("{prefix}{name}"),
         None => name.to_string(),
@@ -211,17 +245,39 @@ fn tool_for(operation: &Operation) -> Tool {
     )
 }
 
+/// A document's base URL: its own setting first, then what the document declares. Named in the
+/// error, because with several documents "no base URL" has to say *which*.
+fn base_url_for(settings: &ApiConfig, api: &Api) -> anyhow::Result<String> {
+    settings
+        .base_url
+        .clone()
+        .or_else(|| api.servers.first().cloned())
+        .with_context(|| {
+            format!(
+                "no base URL for {}: the document declares no `servers`, so set `base_url` for it \
+                 in the config file (or pass --base-url / OAM_BASE_URL)",
+                settings.label
+            )
+        })
+}
+
 /// Shown to the client once, at initialize. Says what this server is a front for, because
 /// "getRecipe" on its own does not tell an agent which API it is talking to.
-fn instructions(apis: &[Api], tools: &[Tool]) -> String {
+fn instructions(config: &Config, apis: &[Api], tools: &[Tool]) -> String {
     let mut text = String::from(
         "Each tool is one operation of an OpenAPI document, called over HTTP. Parameters are \
          flat: path, query, header and cookie parameters are all top-level arguments, and a \
          request body is the `body` argument. Results carry the HTTP status alongside the \
          response.\n\nServing:\n",
     );
-    for api in apis {
-        text.push_str(&format!("- {} {}\n", api.title, api.version));
+    for (settings, api) in config.apis.iter().zip(apis) {
+        let base_url = settings.base_url.as_deref().unwrap_or_else(|| {
+            api.servers
+                .first()
+                .map(String::as_str)
+                .expect("a document without a base URL fails at startup")
+        });
+        text.push_str(&format!("- {} {} at {base_url}\n", api.title, api.version));
     }
     text.push_str(&format!("\n{} tools.", tools.len()));
     text
@@ -267,6 +323,7 @@ pub fn describe_tools(server: &OpenApiMcp) -> Value {
             let operation = server.operation(&tool.name).expect("tool has an operation");
             json!({
                 "name": tool.name,
+                "base_url": server.base_url_of(&tool.name).unwrap_or(""),
                 "method": operation.method,
                 "path": operation.path,
                 "read_only": operation.is_read_only(),
@@ -276,13 +333,18 @@ pub fn describe_tools(server: &OpenApiMcp) -> Value {
         })
         .collect();
 
-    json!({"base_url": server.base_url(), "count": tools.len(), "tools": tools})
+    json!({
+        "base_urls": server.base_urls(),
+        "count": tools.len(),
+        "tools": tools,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::ConfigArgs;
+    use crate::config::test_support::config_from;
     use crate::spec::parse;
 
     const SPEC: &str = r#"{
@@ -311,6 +373,10 @@ mod tests {
         OpenApiMcp::new(&config, vec![parse(SPEC, "test").expect("parses")])
     }
 
+    fn base_url(server: &OpenApiMcp) -> String {
+        server.base_urls().join(", ")
+    }
+
     fn names(server: &OpenApiMcp) -> Vec<String> {
         let mut names: Vec<String> = server.tools().iter().map(|t| t.name.to_string()).collect();
         names.sort();
@@ -320,7 +386,7 @@ mod tests {
     #[test]
     fn the_base_url_falls_back_to_the_documents_first_server() {
         let server = server(ConfigArgs::default()).expect("builds");
-        assert_eq!(server.base_url(), "https://api.example.com/v1");
+        assert_eq!(base_url(&server), "https://api.example.com/v1");
     }
 
     #[test]
@@ -330,7 +396,7 @@ mod tests {
             ..ConfigArgs::default()
         })
         .expect("builds");
-        assert_eq!(server.base_url(), "http://localhost:8080");
+        assert_eq!(base_url(&server), "http://localhost:8080");
     }
 
     #[test]
@@ -344,7 +410,12 @@ mod tests {
         let api = parse(r#"{"paths": {"/a": {"get": {}}}}"#, "test").expect("parses");
 
         let err = OpenApiMcp::new(&config, vec![api]).expect_err("no base URL");
-        assert!(err.to_string().contains("--base-url"), "got: {err}");
+        let message = format!("{err:#}");
+        assert!(message.contains("base_url"), "got: {message}");
+        assert!(
+            message.contains("unused.json"),
+            "it must name the document: {message}"
+        );
     }
 
     #[test]
@@ -406,7 +477,7 @@ mod tests {
     #[test]
     fn names_colliding_across_two_documents_are_disambiguated() {
         let config = ConfigArgs {
-            specs: vec!["unused.json".into()],
+            specs: vec!["one.json".into(), "two.json".into()],
             ..ConfigArgs::default()
         }
         .resolve()
@@ -419,6 +490,62 @@ mod tests {
         assert!(names.contains(&"listRecipes".to_string()));
         assert!(names.contains(&"listRecipes_2".to_string()));
         assert_eq!(server.tools().len(), 10);
+    }
+
+    #[test]
+    fn each_document_keeps_its_own_base_url_and_credentials() {
+        let file = r#"
+            [[api]]
+            name = "one"
+            spec = "one.json"
+            base_url = "https://one.example.com"
+            token = "t-one"
+            read_only = true
+
+            [[api]]
+            name = "two"
+            spec = "two.json"
+            base_url = "https://two.example.com/"
+            headers = { "X-Api-Key" = "k-two" }
+            tool_prefix = "two_"
+        "#;
+        let config = config_from(file);
+
+        assert_eq!(config.apis[0].headers[0].1, "Bearer t-one");
+        assert_eq!(
+            config.apis[1].headers[0],
+            ("X-Api-Key".into(), "k-two".into())
+        );
+        assert!(config.apis[0].read_only, "per-api read_only applies");
+        assert!(
+            !config.apis[1].read_only,
+            "and does not leak to the next api"
+        );
+
+        let server = OpenApiMcp::new(
+            &config,
+            vec![
+                parse(SPEC, "one").expect("parses"),
+                parse(SPEC, "two").expect("parses"),
+            ],
+        )
+        .expect("builds");
+
+        assert_eq!(
+            server.base_urls(),
+            vec!["https://one.example.com", "https://two.example.com"]
+        );
+        assert_eq!(
+            server.base_url_of("listRecipes"),
+            Some("https://one.example.com")
+        );
+        assert_eq!(
+            server.base_url_of("two_listRecipes"),
+            Some("https://two.example.com"),
+            "the second document is reached through its prefix, with no name collision"
+        );
+        // read_only kept one tool from the first document; the second contributes all five.
+        assert_eq!(server.tools().len(), 6);
     }
 
     #[test]
@@ -465,5 +592,9 @@ mod tests {
         assert_eq!(listing["count"], 1);
         assert_eq!(listing["tools"][0]["method"], "GET");
         assert_eq!(listing["tools"][0]["path"], "/recipes");
+        assert_eq!(
+            listing["tools"][0]["base_url"], "https://api.example.com/v1",
+            "each tool says where its calls go"
+        );
     }
 }

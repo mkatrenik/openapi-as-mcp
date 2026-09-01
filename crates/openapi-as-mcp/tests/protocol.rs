@@ -31,6 +31,9 @@ async fn spawn(base_url: &str) -> rmcp::service::RunningService<rmcp::RoleClient
         .env("OAM_SPEC", spec())
         .env("OAM_BASE_URL", base_url)
         .env("OAM_LOG", "warn")
+        // Empty means "no config file, and do not go looking": a file in the developer's home
+        // directory must not change what the test serves.
+        .env("OAM_CONFIG", "")
         // Clear the rest of the OAM_* surface: a developer's own shell must not leak a token or a
         // filter into the test's tool set.
         .env_remove("OAM_TOKEN")
@@ -38,7 +41,8 @@ async fn spawn(base_url: &str) -> rmcp::service::RunningService<rmcp::RoleClient
         .env_remove("OAM_READ_ONLY")
         .env_remove("OAM_INCLUDE")
         .env_remove("OAM_EXCLUDE")
-        .env_remove("OAM_TOOL_PREFIX");
+        .env_remove("OAM_TOOL_PREFIX")
+        .env_remove("OAM_API");
 
     ().serve(TokioChildProcess::new(command).expect("spawn server"))
         .await
@@ -208,7 +212,10 @@ async fn read_only_mode_hides_the_write_operations() {
         .arg("--read-only")
         .env("OAM_SPEC", spec())
         .env("OAM_BASE_URL", api.uri())
-        .env("OAM_LOG", "warn");
+        .env("OAM_LOG", "warn")
+        // Empty means "no config file, and do not go looking": a file in the developer's home
+        // directory must not change what the test serves.
+        .env("OAM_CONFIG", "");
 
     let client =
         ().serve(TokioChildProcess::new(command).expect("spawn"))

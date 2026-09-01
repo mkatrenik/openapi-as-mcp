@@ -1,0 +1,27 @@
+# openapi-as-mcp config file.
+#
+# Copy to ./openapi-as-mcp.toml or ~/.config/openapi-as-mcp/config.toml — both are picked up
+# automatically — or point at it with `--config <path>` / `OAM_CONFIG`.
+#
+# Top-level keys are defaults for every API; an [[api]] entry overrides them. A CLI flag or an
+# OAM_* variable overrides both.
+
+# Applied to every [[api]] below unless it says otherwise.
+timeout = 30
+max_response_bytes = 262144
+exclude = ["^/internal"]
+
+[[api]]
+name = "recipes"                       # what --api selects, and what log lines call this
+spec = "./recipes.openapi.yaml"        # a path or an http(s) URL
+base_url = "https://recipes.internal"  # defaults to the document's first servers[].url
+token = "${RECIPES_TOKEN}"             # ${VAR} and ${VAR:-fallback}; nothing secret in the file
+read_only = true
+
+[[api]]
+name = "billing"
+spec = "https://billing.internal/openapi.json"
+base_url = "https://billing.internal"
+tool_prefix = "billing_"               # keeps names apart when two documents overlap
+headers = { "X-Api-Key" = "${BILLING_KEY}" }
+include = ["^/invoices"]

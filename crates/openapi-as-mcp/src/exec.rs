@@ -4,7 +4,7 @@ use reqwest::{Client, Method, StatusCode};
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
-use crate::config::Config;
+use crate::config::ApiConfig;
 use crate::spec::{Location, Operation, placeholders};
 
 #[derive(Debug, Error)]
@@ -37,16 +37,18 @@ pub struct Executor {
 }
 
 impl Executor {
-    pub fn new(config: &Config, base_url: String) -> anyhow::Result<Self> {
+    /// One executor per document: the base URL, credentials and limits all come from that
+    /// document's own [`ApiConfig`], so two specs in one server never share a token.
+    pub fn new(api: &ApiConfig, base_url: String) -> anyhow::Result<Self> {
         let client = Client::builder()
-            .timeout(config.timeout)
+            .timeout(api.timeout)
             .user_agent(concat!("openapi-as-mcp/", env!("CARGO_PKG_VERSION")))
             .build()?;
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
-            headers: config.headers.clone(),
-            max_response_bytes: config.max_response_bytes,
+            headers: api.headers.clone(),
+            max_response_bytes: api.max_response_bytes,
         })
     }
 
@@ -331,9 +333,12 @@ mod tests {
             .clone()
     }
 
+    fn api_config() -> ApiConfig {
+        ConfigArgs::default().resolve_for_test().apis.remove(0)
+    }
+
     fn executor(base: &str) -> Executor {
-        let config = ConfigArgs::default().resolve_for_test();
-        Executor::new(&config, base.to_string()).expect("client builds")
+        Executor::new(&api_config(), base.to_string()).expect("client builds")
     }
 
     fn args(value: Value) -> Map<String, Value> {
@@ -457,9 +462,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let mut config = ConfigArgs::default().resolve_for_test();
-        config.max_response_bytes = 100;
-        let executor = Executor::new(&config, server.uri()).expect("client builds");
+        let mut api_config = api_config();
+        api_config.max_response_bytes = 100;
+        let executor = Executor::new(&api_config, server.uri()).expect("client builds");
 
         let api = api();
         let payload = executor

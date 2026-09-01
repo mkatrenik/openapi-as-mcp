@@ -7,7 +7,7 @@ up the moment the document does.
 
 Use it when an API is worth handing to an agent but not worth a hand-written MCP server. When the
 tools need to *do* something the API does not — derive a path, join two calls, explain a failure —
-write a real server instead; [recipe-run-debug-mcp](../recipe-run-debug-mcp/) is that.
+write a real server instead.
 
 ## Quick start
 
@@ -77,7 +77,9 @@ when it is JSON, otherwise as `text`. A non-2xx response, a timeout or a bad arg
 
 | Flag | Env | |
 | --- | --- | --- |
+| `--config`, `-c` | `OAM_CONFIG` | TOML config file; `""` means "no file, and do not go looking" |
 | `--spec`, `-s` | `OAM_SPEC` | document to serve; a path or an `http(s)` URL. Repeatable |
+| `--api` | `OAM_API` | serve only these `[[api]]` entries of the config file, by name |
 | `--base-url` | `OAM_BASE_URL` | where requests go; defaults to the document's first `servers[].url` |
 | `--token` | `OAM_TOKEN` | sent as `Authorization: Bearer …` |
 | `--header`, `-H` | `OAM_HEADERS` | extra header, `Name: value`. The env form takes `A: 1;B: 2` |
@@ -88,11 +90,70 @@ when it is JSON, otherwise as `text`. A non-2xx response, a timeout or a bad arg
 | `--max-response-bytes` | `OAM_MAX_RESPONSE_BYTES` | ceiling on one response (default 256 KiB) |
 | `OAM_LOG` | | log filter; diagnostics always go to stderr |
 
-Several `--spec`s are served together. Names are deduplicated across documents, so a collision
-becomes `listRecipes_2` rather than a lost tool.
+Startup fails, rather than serving something useless, when a document has no base URL to send its
+requests to or when the filters leave no operations at all.
 
-Startup fails, rather than serving something useless, when there is no base URL to send requests to
-or when the filters leave no operations at all.
+## Several documents at once
+
+Every `--spec` is served together in one tool set, and names are deduplicated across documents, so
+a collision becomes `listRecipes_2` rather than a lost tool. Flags apply to all of them, which is
+fine when the documents share a host and a token.
+
+When they do not, describe them in a config file instead: each `[[api]]` gets its own base URL,
+credentials, filters and prefix. `--config <path>`, or `./openapi-as-mcp.toml` and
+`~/.config/openapi-as-mcp/config.toml`, which are picked up automatically.
+
+```toml
+# Defaults for every api below.
+timeout = 30
+exclude = ["^/internal"]
+
+[[api]]
+name = "recipes"
+spec = "./recipes.openapi.yaml"
+base_url = "https://recipes.internal"
+token = "${RECIPES_TOKEN}"
+read_only = true
+
+[[api]]
+name = "billing"
+spec = "https://billing.internal/openapi.json"
+base_url = "https://billing.internal"
+tool_prefix = "billing_"
+headers = { "X-Api-Key" = "${BILLING_KEY}" }
+include = ["^/invoices"]
+```
+
+See [example.config.toml](example.config.toml) for the annotated version. The keys are the flag
+names: `spec` (or `specs`, a list, at the top level), `base_url`, `token`, `headers`, `read_only`,
+`include`, `exclude`, `tool_prefix`, `timeout`, `max_response_bytes` — kebab-case spellings work
+too. A misspelled key is an error rather than a silently ignored line.
+
+`${VAR}` and `${VAR:-fallback}` are expanded in `spec`, `base_url`, `token` and header values, so
+a token stays in the environment and the file stays committable.
+
+Precedence, most specific first: a CLI flag or `OAM_*` variable, the `[[api]]` entry, the file's
+top-level defaults. A `--spec` on the command line is served *in addition to* the file's entries,
+never instead of them, and `--api recipes` narrows the run to the entries you name:
+
+```bash
+openapi-as-mcp list --api recipes          # one document out of the file
+openapi-as-mcp serve --api recipes --api billing
+```
+
+An MCP client entry can then be one line of arguments:
+
+```json
+{
+  "mcpServers": {
+    "apis": {
+      "command": "openapi-as-mcp",
+      "args": ["serve", "--config", "/path/to/openapi-as-mcp.toml"],
+      "env": { "RECIPES_TOKEN": "…", "BILLING_KEY": "…" }
+    }
+  }
+}
+```
 
 ## Development
 

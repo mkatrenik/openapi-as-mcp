@@ -7,7 +7,7 @@ use std::process::Output;
 
 use serde_json::{Value, json};
 use tokio::process::Command;
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn spec() -> String {
@@ -25,9 +25,44 @@ async fn run(base_url: &str, args: &[&str]) -> Output {
         .arg("--base-url")
         .arg(base_url)
         .env("OAM_LOG", "error")
+        // An empty OAM_CONFIG means "no config file, and do not go looking": a file in the
+        // developer's home directory must not change what these tests serve.
+        .env("OAM_CONFIG", "")
         .output()
         .await
         .expect("binary runs")
+}
+
+/// Runs the binary against a written config file, with no `--spec` of its own.
+async fn run_with_config(config: &std::path::Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_openapi-as-mcp"))
+        .args(args)
+        .arg("--config")
+        .arg(config)
+        .env("OAM_LOG", "error")
+        .env_remove("OAM_SPEC")
+        .env_remove("OAM_BASE_URL")
+        .env_remove("OAM_TOKEN")
+        .output()
+        .await
+        .expect("binary runs")
+}
+
+/// A config file in a fresh temp directory, removed when the returned guard drops.
+struct ConfigFile(std::path::PathBuf);
+
+impl ConfigFile {
+    fn write(name: &str, body: &str) -> Self {
+        let path = std::env::temp_dir().join(format!("oam-cli-{}-{name}.toml", std::process::id()));
+        std::fs::write(&path, body).expect("writes the config");
+        Self(path)
+    }
+}
+
+impl Drop for ConfigFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 fn stdout_json(output: &Output) -> Value {
@@ -130,4 +165,81 @@ async fn a_bare_invocation_prints_help_rather_than_starting_the_server() {
     assert!(!output.status.success());
     let help = String::from_utf8_lossy(&output.stderr);
     assert!(help.contains("serve"), "help must mention serve: {help}");
+}
+
+#[tokio::test]
+async fn a_config_file_serves_two_documents_each_against_its_own_host() {
+    // Two mock APIs standing in for two services: the point is that one server can call both, and
+    // that each call goes to the right one with the right credentials.
+    let one = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/recipes"))
+        .and(header("Authorization", "Bearer token-one"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"from": "one"})))
+        .mount(&one)
+        .await;
+
+    let two = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/recipes"))
+        .and(header("X-Api-Key", "key-two"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"from": "two"})))
+        .mount(&two)
+        .await;
+
+    let config = ConfigFile::write(
+        "two-apis",
+        &format!(
+            r#"
+read_only = true
+
+[[api]]
+name = "one"
+spec = "{spec}"
+base_url = "{one}"
+token = "token-one"
+
+[[api]]
+name = "two"
+spec = "{spec}"
+base_url = "{two}"
+tool_prefix = "two_"
+headers = {{ "X-Api-Key" = "key-two" }}
+"#,
+            spec = spec(),
+            one = one.uri(),
+            two = two.uri(),
+        ),
+    );
+
+    let listing = stdout_json(&run_with_config(&config.0, &["list"]).await);
+    // The fixture has two read-only operations, so the shared `read_only = true` leaves two tools
+    // per document rather than all four.
+    assert_eq!(listing["count"], 4, "got: {listing}");
+    assert_eq!(
+        listing["base_urls"],
+        json!([one.uri(), two.uri()]),
+        "got: {listing}"
+    );
+
+    let first = stdout_json(&run_with_config(&config.0, &["call", "listRecipes"]).await);
+    assert_eq!(first["json"]["from"], "one");
+
+    let second = stdout_json(&run_with_config(&config.0, &["call", "two_listRecipes"]).await);
+    assert_eq!(
+        second["json"]["from"], "two",
+        "the prefixed tool is sent to the second host with its own header"
+    );
+
+    // --api narrows the same file to one document.
+    let narrowed = stdout_json(&run_with_config(&config.0, &["list", "--api", "two"]).await);
+    assert_eq!(narrowed["base_urls"], json!([two.uri()]));
+}
+
+#[tokio::test]
+async fn a_config_file_that_does_not_exist_fails_loudly() {
+    let output = run_with_config(std::path::Path::new("/nonexistent/oam.toml"), &["list"]).await;
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("does not exist"), "got: {stderr}");
 }
