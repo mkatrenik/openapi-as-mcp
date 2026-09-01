@@ -9,6 +9,7 @@ binary crate under [crates/](crates/), with shared dependency versions pinned on
 | Crate | Binary | What it does |
 | --- | --- | --- |
 | [crates/recipe-run-debug-mcp](crates/recipe-run-debug-mcp/) | `recipe-run-debug-mcp` | MCP server **and CLI** for debugging recipe runs — see its [README](crates/recipe-run-debug-mcp/README.md) |
+| [crates/openapi-as-mcp](crates/openapi-as-mcp/) | `openapi-as-mcp` | Serves any OpenAPI 3.x document as an MCP tool set, one tool per operation — see its [README](crates/openapi-as-mcp/README.md) |
 
 ## Working in the workspace
 

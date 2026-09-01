@@ -1,0 +1,64 @@
+# A small but representative document: every parameter location, a $ref'd component schema, a
+# request body, and one write operation, so the end-to-end tests exercise the paths that differ.
+openapi: 3.0.3
+info:
+  title: Recipes
+  version: "1.0.0"
+paths:
+  /recipes:
+    get:
+      operationId: listRecipes
+      summary: List recipes, newest first
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - name: state
+          in: query
+          schema:
+            type: array
+            items: { type: string }
+      responses:
+        "200": { description: A page of recipes }
+    post:
+      operationId: createRecipe
+      summary: Create a recipe
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Recipe" }
+      responses:
+        "201": { description: Created }
+  /recipes/{recipe_id}:
+    parameters:
+      - name: recipe_id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getRecipe
+      summary: One recipe by id
+      parameters:
+        - name: X-Trace
+          in: header
+          schema: { type: string }
+      responses:
+        "200": { description: The recipe }
+    delete:
+      operationId: deleteRecipe
+      summary: Delete a recipe
+      responses:
+        "204": { description: Gone }
+components:
+  schemas:
+    Recipe:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        owner: { $ref: "#/components/schemas/User" }
+    User:
+      type: object
+      properties:
+        email: { type: string, nullable: true }
