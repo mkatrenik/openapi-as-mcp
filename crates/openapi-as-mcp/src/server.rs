@@ -160,8 +160,8 @@ fn describe_error(err: &CallError) -> String {
                 || *status == reqwest::StatusCode::FORBIDDEN =>
         {
             Some(
-                "The API rejected the credentials. Restart the server with --token <TOKEN> or \
-                 OAM_TOKEN set, or fix this API's `token` in the config file.",
+                "The API rejected the credentials. Restart the server with --token <TOKEN>, or \
+                 fix this API's `token` in the config file.",
             )
         }
         CallError::Transport { .. } => Some(
@@ -255,7 +255,7 @@ fn base_url_for(settings: &ApiConfig, api: &Api) -> anyhow::Result<String> {
         .with_context(|| {
             format!(
                 "no base URL for {}: the document declares no `servers`, so set `base_url` for it \
-                 in the config file (or pass --base-url / OAM_BASE_URL)",
+                 in the config file (or pass --base-url)",
                 settings.label
             )
         })

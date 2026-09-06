@@ -28,21 +28,12 @@ async fn spawn(base_url: &str) -> rmcp::service::RunningService<rmcp::RoleClient
     command
         // The server is opt-in: without `serve` the binary prints help and exits.
         .arg("serve")
-        .env("OAM_SPEC", spec())
-        .env("OAM_BASE_URL", base_url)
-        .env("OAM_LOG", "warn")
+        .args(["--spec", &spec()])
+        .args(["--base-url", base_url])
+        .args(["--log", "warn"])
         // Empty means "no config file, and do not go looking": a file in the developer's home
         // directory must not change what the test serves.
-        .env("OAM_CONFIG", "")
-        // Clear the rest of the OAM_* surface: a developer's own shell must not leak a token or a
-        // filter into the test's tool set.
-        .env_remove("OAM_TOKEN")
-        .env_remove("OAM_HEADERS")
-        .env_remove("OAM_READ_ONLY")
-        .env_remove("OAM_INCLUDE")
-        .env_remove("OAM_EXCLUDE")
-        .env_remove("OAM_TOOL_PREFIX")
-        .env_remove("OAM_API");
+        .args(["--config", ""]);
 
     ().serve(TokioChildProcess::new(command).expect("spawn server"))
         .await
@@ -210,12 +201,12 @@ async fn read_only_mode_hides_the_write_operations() {
     command
         .arg("serve")
         .arg("--read-only")
-        .env("OAM_SPEC", spec())
-        .env("OAM_BASE_URL", api.uri())
-        .env("OAM_LOG", "warn")
+        .args(["--spec", &spec()])
+        .args(["--base-url", &api.uri()])
+        .args(["--log", "warn"])
         // Empty means "no config file, and do not go looking": a file in the developer's home
         // directory must not change what the test serves.
-        .env("OAM_CONFIG", "");
+        .args(["--config", ""]);
 
     let client =
         ().serve(TokioChildProcess::new(command).expect("spawn"))

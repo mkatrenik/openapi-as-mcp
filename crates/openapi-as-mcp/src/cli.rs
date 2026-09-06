@@ -27,8 +27,6 @@ use crate::spec;
     long_about = "Serve any OpenAPI 3.x document as an MCP tool set.\n\n`serve` runs the MCP \
                   server on stdio; the other subcommands inspect and exercise the same tools \
                   from a shell.",
-    after_help = "Every flag has an OAM_* environment fallback, for MCP client entries that can \
-                  only set `env`.",
     // A bare invocation prints help rather than a one-line error: it is what someone who just
     // installed this types first.
     arg_required_else_help = true
@@ -57,6 +55,11 @@ pub struct OutputArgs {
     /// Print single-line JSON instead of indented, for piping into jq.
     #[arg(long, global = true)]
     compact: bool,
+
+    /// Log filter, in `tracing` directive form (`info`, `openapi_as_mcp=debug`). Diagnostics
+    /// always go to stderr. Defaults to `info` under `serve` and `error` otherwise.
+    #[arg(long, value_name = "FILTER", global = true)]
+    pub log: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

@@ -2,8 +2,8 @@
 //! them.
 //!
 //! Three sources, most specific first: a CLI flag, an `[[api]]` entry in the config file, then the
-//! file's top-level defaults. Every flag also has an `OAM_*` environment fallback, so the same
-//! invocation works from a shell and from an MCP client entry that can only set `env`.
+//! file's top-level defaults. Everything is configured by flags; the process environment is read
+//! only for `${VAR}` expansion inside the config file.
 //!
 //! One document is one [`ApiConfig`]: its own base URL, headers, filters and prefix. That is the
 //! point of the file — several specs in one server only works if each can be pointed at its own
@@ -41,7 +41,6 @@ pub struct ConfigArgs {
         long = "config",
         short = 'c',
         value_name = "PATH",
-        env = "OAM_CONFIG",
         global = true
     )]
     /// A `String` rather than a `PathBuf` because clap's path parser rejects an empty value, and
@@ -54,7 +53,6 @@ pub struct ConfigArgs {
         long = "spec",
         short = 's',
         value_name = "PATH_OR_URL",
-        env = "OAM_SPEC",
         value_delimiter = ',',
         // Not `required`: clap forbids that on a global argument, and the file may supply the
         // specs instead, so `resolve` reports the omission with a message covering both.
@@ -66,7 +64,6 @@ pub struct ConfigArgs {
     #[arg(
         long = "api",
         value_name = "NAME",
-        env = "OAM_API",
         value_delimiter = ',',
         global = true
     )]
@@ -76,37 +73,26 @@ pub struct ConfigArgs {
     #[arg(
         long = "base-url",
         value_name = "URL",
-        env = "OAM_BASE_URL",
         global = true
     )]
     pub base_url: Option<String>,
 
     /// Bearer token, sent as `Authorization: Bearer <token>`.
-    #[arg(long, value_name = "TOKEN", env = "OAM_TOKEN", global = true)]
+    #[arg(long, value_name = "TOKEN", global = true)]
     pub token: Option<String>,
 
     /// Extra request header, `Name: value`. Repeatable.
     #[arg(long = "header", short = 'H', value_name = "HEADER", global = true)]
     pub headers: Vec<String>,
 
-    /// Same as --header, as one `Name: value;Name: value` string, for MCP client `env` blocks.
-    #[arg(
-        long = "headers",
-        value_name = "HEADERS",
-        env = "OAM_HEADERS",
-        global = true
-    )]
-    pub headers_env: Option<String>,
-
     /// Expose only GET/HEAD/OPTIONS operations. Use against an API you do not want written to.
-    #[arg(long = "read-only", env = "OAM_READ_ONLY", global = true)]
+    #[arg(long = "read-only", global = true)]
     pub read_only: bool,
 
     /// Keep only operations whose tool name, method or path matches this regex. Repeatable.
     #[arg(
         long = "include",
         value_name = "REGEX",
-        env = "OAM_INCLUDE",
         global = true
     )]
     pub include: Vec<String>,
@@ -116,7 +102,6 @@ pub struct ConfigArgs {
     #[arg(
         long = "exclude",
         value_name = "REGEX",
-        env = "OAM_EXCLUDE",
         global = true
     )]
     pub exclude: Vec<String>,
@@ -125,17 +110,16 @@ pub struct ConfigArgs {
     #[arg(
         long = "tool-prefix",
         value_name = "PREFIX",
-        env = "OAM_TOOL_PREFIX",
         global = true
     )]
     pub tool_prefix: Option<String>,
 
     /// Per-request timeout in seconds.
-    #[arg(long, value_name = "SECONDS", env = "OAM_TIMEOUT", global = true)]
+    #[arg(long, value_name = "SECONDS", global = true)]
     pub timeout: Option<u64>,
 
     /// Ceiling on the response bytes one tool call may return.
-    #[arg(long, value_name = "N", env = "OAM_MAX_RESPONSE_BYTES", global = true)]
+    #[arg(long, value_name = "N", global = true)]
     pub max_response_bytes: Option<usize>,
 }
 
@@ -346,8 +330,8 @@ impl ConfigArgs {
 
         if entries.is_empty() {
             bail!(
-                "no OpenAPI document given; pass --spec <path-or-url>, set OAM_SPEC, or declare \
-                 [[api]] entries in a config file (--config)"
+                "no OpenAPI document given; pass --spec <path-or-url>, or declare [[api]] \
+                 entries in a config file (--config)"
             );
         }
 
@@ -370,8 +354,8 @@ impl ConfigArgs {
     /// one need not.
     fn load_file(&self) -> anyhow::Result<(Option<PathBuf>, Settings)> {
         let path = match &self.config {
-            // `--config ""` (or `OAM_CONFIG=`) is "no file, and do not go looking", which is how a
-            // test or a locked-down MCP entry keeps a stray file out of the configuration.
+            // `--config ""` is "no file, and do not go looking", which is how a test or a
+            // locked-down MCP entry keeps a stray file out of the configuration.
             Some(path) if path.trim().is_empty() => None,
             Some(path) => {
                 let path = PathBuf::from(path);
@@ -426,7 +410,6 @@ impl ConfigArgs {
             .headers
             .iter()
             .map(String::as_str)
-            .chain(self.headers_env.iter().flat_map(|s| s.split(';')))
             .filter(|raw| !raw.trim().is_empty())
         {
             headers.push(parse_header(raw)?);
@@ -501,7 +484,7 @@ impl ConfigArgs {
 
 fn discover() -> Option<PathBuf> {
     // A unit test must not pick up the developer's own config; the integration tests pass
-    // `OAM_CONFIG=""` for the same reason.
+    // `--config ""` for the same reason.
     if cfg!(test) {
         return None;
     }
@@ -653,10 +636,9 @@ mod tests {
     }
 
     #[test]
-    fn headers_come_from_both_the_flag_and_the_env_string() {
+    fn headers_come_from_the_repeated_flag() {
         let api = only(ConfigArgs {
-            headers: vec!["X-A: 1".into()],
-            headers_env: Some("X-B: 2;X-C: 3".into()),
+            headers: vec!["X-A: 1".into(), "X-B: 2".into(), "X-C: 3".into()],
             ..args()
         });
         let names: Vec<&str> = api.headers.iter().map(|(n, _)| n.as_str()).collect();
@@ -829,25 +811,25 @@ mod tests {
 
     #[test]
     fn an_env_reference_is_expanded_and_a_missing_one_is_an_error() {
-        unsafe { std::env::set_var("OAM_TEST_TOKEN", "s3cret") };
+        unsafe { std::env::set_var("CONFIG_EXPANSION_TEST_TOKEN", "s3cret") };
         let config = config_from(
             r#"
             [[api]]
             spec = "a.json"
             base_url = "https://x.example.com"
-            token = "${OAM_TEST_TOKEN}"
-            headers = { "X-Env" = "${OAM_TEST_MISSING:-fallback}" }
+            token = "${CONFIG_EXPANSION_TEST_TOKEN}"
+            headers = { "X-Env" = "${CONFIG_EXPANSION_TEST_MISSING:-fallback}" }
         "#,
         );
         assert_eq!(config.apis[0].headers[0].1, "Bearer s3cret");
         assert_eq!(config.apis[0].headers[1].1, "fallback");
 
         let err = try_config_from(
-            "[[api]]\nspec = \"a.json\"\ntoken = \"${OAM_TEST_DEFINITELY_MISSING}\"\n",
+            "[[api]]\nspec = \"a.json\"\ntoken = \"${CONFIG_EXPANSION_TEST_DEFINITELY_MISSING}\"\n",
         )
         .expect_err("rejected");
         assert!(
-            format!("{err:#}").contains("OAM_TEST_DEFINITELY_MISSING"),
+            format!("{err:#}").contains("CONFIG_EXPANSION_TEST_DEFINITELY_MISSING"),
             "got: {err:#}"
         );
     }

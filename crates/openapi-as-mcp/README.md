@@ -30,20 +30,20 @@ argument object at once.
 
 ## As an MCP server
 
-`serve` runs the server on stdio. Everything has an `OAM_*` environment fallback, for clients that
-can only set `env`:
+`serve` runs the server on stdio. Everything is configured by flags, so a client entry is one
+`args` list:
 
 ```json
 {
   "mcpServers": {
     "recipes": {
       "command": "openapi-as-mcp",
-      "args": ["serve"],
-      "env": {
-        "OAM_SPEC": "/path/to/openapi.yaml",
-        "OAM_BASE_URL": "https://api.example.com",
-        "OAM_TOKEN": "…"
-      }
+      "args": [
+        "serve",
+        "--spec", "/path/to/openapi.yaml",
+        "--base-url", "https://api.example.com",
+        "--token", "…"
+      ]
     }
   }
 }
@@ -75,20 +75,20 @@ when it is JSON, otherwise as `text`. A non-2xx response, a timeout or a bad arg
 
 ## Options
 
-| Flag | Env | |
-| --- | --- | --- |
-| `--config`, `-c` | `OAM_CONFIG` | TOML config file; `""` means "no file, and do not go looking" |
-| `--spec`, `-s` | `OAM_SPEC` | document to serve; a path or an `http(s)` URL. Repeatable |
-| `--api` | `OAM_API` | serve only these `[[api]]` entries of the config file, by name |
-| `--base-url` | `OAM_BASE_URL` | where requests go; defaults to the document's first `servers[].url` |
-| `--token` | `OAM_TOKEN` | sent as `Authorization: Bearer …` |
-| `--header`, `-H` | `OAM_HEADERS` | extra header, `Name: value`. The env form takes `A: 1;B: 2` |
-| `--read-only` | `OAM_READ_ONLY` | expose only GET/HEAD/OPTIONS |
-| `--include` / `--exclude` | `OAM_INCLUDE` / `OAM_EXCLUDE` | regexes, matched against the tool name, the method and the path independently |
-| `--tool-prefix` | `OAM_TOOL_PREFIX` | keeps two of these apart in one client |
-| `--timeout` | `OAM_TIMEOUT` | per-request, in seconds (default 60) |
-| `--max-response-bytes` | `OAM_MAX_RESPONSE_BYTES` | ceiling on one response (default 256 KiB) |
-| `OAM_LOG` | | log filter; diagnostics always go to stderr |
+| Flag | |
+| --- | --- |
+| `--config`, `-c` | TOML config file; `""` means "no file, and do not go looking" |
+| `--spec`, `-s` | document to serve; a path or an `http(s)` URL. Repeatable |
+| `--api` | serve only these `[[api]]` entries of the config file, by name |
+| `--base-url` | where requests go; defaults to the document's first `servers[].url` |
+| `--token` | sent as `Authorization: Bearer …` |
+| `--header`, `-H` | extra header, `Name: value`. Repeatable |
+| `--read-only` | expose only GET/HEAD/OPTIONS |
+| `--include` / `--exclude` | regexes, matched against the tool name, the method and the path independently |
+| `--tool-prefix` | keeps two of these apart in one client |
+| `--timeout` | per-request, in seconds (default 60) |
+| `--max-response-bytes` | ceiling on one response (default 256 KiB) |
+| `--log` | log filter; diagnostics always go to stderr |
 
 Startup fails, rather than serving something useless, when a document has no base URL to send its
 requests to or when the filters leave no operations at all.
@@ -132,8 +132,7 @@ too. A misspelled key is an error rather than a silently ignored line.
 `${VAR}` and `${VAR:-fallback}` are expanded in `spec`, `base_url`, `token` and header values, so
 a token stays in the environment and the file stays committable.
 
-Precedence, most specific first: a CLI flag or `OAM_*` variable, the `[[api]]` entry, the file's
-top-level defaults. A `--spec` on the command line is served *in addition to* the file's entries,
+Precedence, most specific first: a CLI flag, the `[[api]]` entry, the file's top-level defaults. A `--spec` on the command line is served *in addition to* the file's entries,
 never instead of them, and `--api recipes` narrows the run to the entries you name:
 
 ```bash

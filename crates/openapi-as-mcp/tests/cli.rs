@@ -24,10 +24,10 @@ async fn run(base_url: &str, args: &[&str]) -> Output {
         .arg(spec())
         .arg("--base-url")
         .arg(base_url)
-        .env("OAM_LOG", "error")
-        // An empty OAM_CONFIG means "no config file, and do not go looking": a file in the
+        .args(["--log", "error"])
+        // An empty `--config` means "no config file, and do not go looking": a file in the
         // developer's home directory must not change what these tests serve.
-        .env("OAM_CONFIG", "")
+        .args(["--config", ""])
         .output()
         .await
         .expect("binary runs")
@@ -39,10 +39,7 @@ async fn run_with_config(config: &std::path::Path, args: &[&str]) -> Output {
         .args(args)
         .arg("--config")
         .arg(config)
-        .env("OAM_LOG", "error")
-        .env_remove("OAM_SPEC")
-        .env_remove("OAM_BASE_URL")
-        .env_remove("OAM_TOKEN")
+        .args(["--log", "error"])
         .output()
         .await
         .expect("binary runs")
@@ -157,7 +154,6 @@ async fn a_failed_call_exits_non_zero_and_writes_to_stderr() {
 #[tokio::test]
 async fn a_bare_invocation_prints_help_rather_than_starting_the_server() {
     let output = Command::new(env!("CARGO_BIN_EXE_openapi-as-mcp"))
-        .env("OAM_LOG", "error")
         .output()
         .await
         .expect("binary runs");

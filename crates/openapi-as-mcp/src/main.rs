@@ -34,15 +34,17 @@ async fn main() -> anyhow::Result<ExitCode> {
     let cli = Cli::parse();
 
     // In CLI mode the default is quiet: the result is the output, and a failed call already prints
-    // its message to stderr — logging it too would just print everything twice. OAM_LOG still
-    // turns logging back on.
+    // its message to stderr — logging it too would just print everything twice. `--log` turns
+    // logging back on.
     let default_level = if cli.is_serve() { "info" } else { "error" };
+    let filter = match cli.output.log.as_deref() {
+        Some(directives) => tracing_subscriber::EnvFilter::try_new(directives)
+            .context("--log is not a valid tracing filter")?,
+        None => tracing_subscriber::EnvFilter::new(default_level),
+    };
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("OAM_LOG")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level)),
-        )
+        .with_env_filter(filter)
         .init();
 
     if !cli.is_serve() {

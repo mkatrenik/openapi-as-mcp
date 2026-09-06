@@ -1,10 +1,10 @@
 # openapi-as-mcp config file.
 #
 # Copy to ./openapi-as-mcp.toml or ~/.config/openapi-as-mcp/config.toml — both are picked up
-# automatically — or point at it with `--config <path>` / `OAM_CONFIG`.
+# automatically — or point at it with `--config <path>`.
 #
-# Top-level keys are defaults for every API; an [[api]] entry overrides them. A CLI flag or an
-# OAM_* variable overrides both.
+# Top-level keys are defaults for every API; an [[api]] entry overrides them. A CLI flag overrides
+# both.
 
 # Applied to every [[api]] below unless it says otherwise.
 timeout = 30

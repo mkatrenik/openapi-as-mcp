@@ -6,7 +6,7 @@ description = "Serve any OpenAPI 3.x document as an MCP tool set"
 
 [dependencies]
 rmcp = { workspace = true }
-clap = { workspace = true, features = ["env"] }
+clap = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
