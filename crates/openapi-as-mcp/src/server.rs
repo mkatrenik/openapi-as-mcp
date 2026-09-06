@@ -79,7 +79,7 @@ impl OpenApiMcp {
                 api = %settings.label,
                 base_url = %base_url,
                 read_only = settings.read_only,
-                authenticated = !settings.headers.is_empty(),
+                authenticated = !settings.headers.is_empty() || settings.token_command.is_some(),
                 "serving document"
             );
             executors.push(Executor::new(settings, base_url)?);

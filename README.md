@@ -1,13 +1,13 @@
-# ingestion-tools
+# openapi-as-mcp
 
-Cargo workspace holding the tools for working with the ingestion platform. Each tool is its own
+Cargo workspace holding the tools for working with openapi described apis. Each tool is its own
 binary crate under [crates/](crates/), with shared dependency versions pinned once in the root
 [Cargo.toml](Cargo.toml) (`[workspace.dependencies]`).
 
 ## Tools
 
-| Crate | Binary | What it does |
-| --- | --- | --- |
+| Crate                                           | Binary           | What it does                                                                                                                                                                   |
+| ----------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [crates/openapi-as-mcp](crates/openapi-as-mcp/) | `openapi-as-mcp` | Serves any number of OpenAPI 3.x documents as one MCP tool set, one tool per operation, configured by flags or a TOML file — see its [README](crates/openapi-as-mcp/README.md) |
 
 ## Working in the workspace

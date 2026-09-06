@@ -25,3 +25,12 @@ base_url = "https://billing.internal"
 tool_prefix = "billing_"               # keeps names apart when two documents overlap
 headers = { "X-Api-Key" = "${BILLING_KEY}" }
 include = ["^/invoices"]
+
+[[api]]
+name = "gateway"
+spec = "https://gateway.internal/openapi.json"
+base_url = "https://gateway.internal"
+# Run before every request; its trimmed stdout becomes the bearer token. Use this instead of
+# `token` for one that expires or lives in a secret manager — nothing secret needs to be in this
+# file. Mutually exclusive with `token` at the same level.
+token_command = "gcloud auth print-identity-token"

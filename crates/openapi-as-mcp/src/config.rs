@@ -81,6 +81,13 @@ pub struct ConfigArgs {
     #[arg(long, value_name = "TOKEN", global = true)]
     pub token: Option<String>,
 
+    /// Shell command whose trimmed stdout becomes the bearer token, run again for every request.
+    /// Use this instead of `--token` for a token that expires or lives in a secret manager, e.g.
+    /// `gcloud auth print-identity-token` or `op read op://vault/item/token`. Mutually exclusive
+    /// with `--token` at the same level.
+    #[arg(long = "token-command", value_name = "COMMAND", global = true)]
+    pub token_command: Option<String>,
+
     /// Extra request header, `Name: value`. Repeatable.
     #[arg(long = "header", short = 'H', value_name = "HEADER", global = true)]
     pub headers: Vec<String>,
@@ -137,6 +144,9 @@ pub struct ApiConfig {
     pub tool_prefix: Option<String>,
     pub timeout: Duration,
     pub max_response_bytes: usize,
+    /// When set, run this shell command before every request and send its trimmed stdout as
+    /// `Authorization: Bearer <output>`, replacing any static token/`Authorization` header.
+    pub token_command: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +177,8 @@ struct Settings {
     #[serde(alias = "base-url")]
     base_url: Option<String>,
     token: Option<String>,
+    #[serde(alias = "token-command")]
+    token_command: Option<String>,
     headers: Option<Headers>,
     #[serde(alias = "read-only")]
     read_only: Option<bool>,
@@ -226,6 +238,10 @@ impl Headers {
 impl Settings {
     /// Expands `${VAR}` and `${VAR:-fallback}` in every value a secret or a host can hide in.
     /// Only file-sourced values go through this — a shell has already done it for a flag.
+    ///
+    /// `token_command` is deliberately left untouched: it is handed to a shell of its own at
+    /// request time, which expands its own `$VAR`/`${VAR}` references, so running our expander
+    /// over it first would consume syntax the command needed for itself.
     fn expand_env(&mut self) -> anyhow::Result<()> {
         for text in [&mut self.base_url, &mut self.token].into_iter().flatten() {
             *text = expand_env(text)?;
@@ -274,6 +290,19 @@ impl Settings {
     }
 }
 
+/// A single level (a flag pair, or one `Settings`) may pick at most one way to authenticate.
+fn reject_conflicting_token(
+    token: Option<&String>,
+    token_command: Option<&String>,
+    whom: &str,
+) -> anyhow::Result<()> {
+    let set = |value: Option<&String>| value.is_some_and(|v| !v.trim().is_empty());
+    if set(token) && set(token_command) {
+        bail!("{whom}: `token` and `token_command` cannot both be set");
+    }
+    Ok(())
+}
+
 impl ConfigArgs {
     pub fn resolve(&self) -> anyhow::Result<Config> {
         let (path, defaults) = self.load_file()?;
@@ -287,6 +316,24 @@ impl ConfigArgs {
                 "{}: `[[api]]` entries cannot contain their own `[[api]]`",
                 source(nested.name.as_deref().unwrap_or("an [[api]] entry"))
             );
+        }
+
+        reject_conflicting_token(
+            self.token.as_ref(),
+            self.token_command.as_ref(),
+            "--token / --token-command",
+        )?;
+        reject_conflicting_token(
+            defaults.token.as_ref(),
+            defaults.token_command.as_ref(),
+            &source("the top-level config"),
+        )?;
+        for entry in &defaults.api {
+            reject_conflicting_token(
+                entry.token.as_ref(),
+                entry.token_command.as_ref(),
+                &source(entry.name.as_deref().unwrap_or("an [[api]] entry")),
+            )?;
         }
 
         // File first, then the flags, so the resulting tool order matches how the config reads.
@@ -415,6 +462,27 @@ impl ConfigArgs {
             headers.push(parse_header(raw)?);
         }
 
+        // Whichever of `token`/`token_command` the most specific level sets wins outright, the
+        // same way it would for `base_url`: an [[api]] entry's plain `token` overrides a
+        // `token_command` declared at the top level, and vice versa.
+        fn non_empty(value: Option<&String>) -> bool {
+            value.is_some_and(|v| !v.trim().is_empty())
+        }
+        let token_command = [
+            (self.token_command.as_ref(), self.token.as_ref()),
+            (entry.token_command.as_ref(), entry.token.as_ref()),
+            (defaults.token_command.as_ref(), defaults.token.as_ref()),
+        ]
+        .into_iter()
+        .find(|(command, token)| non_empty(*command) || non_empty(*token))
+        .and_then(|(command, _)| command.cloned());
+
+        let mut headers = dedupe_headers(headers);
+        if token_command.is_some() {
+            // Resolved fresh on every call instead; a stale static one must not also go out.
+            headers.retain(|(name, _)| !name.eq_ignore_ascii_case("authorization"));
+        }
+
         let picked = |flag: Option<&String>, entry: Option<&String>, default: Option<&String>| {
             flag.or(entry).or(default).cloned()
         };
@@ -441,7 +509,7 @@ impl ConfigArgs {
                 defaults.base_url.as_ref(),
             )
             .map(|url| url.trim_end_matches('/').to_string()),
-            headers: dedupe_headers(headers),
+            headers,
             read_only: self.read_only || entry.read_only.or(defaults.read_only).unwrap_or(false),
             include: compile(
                 &patterns(&self.include, &entry.include, &defaults.include),
@@ -467,6 +535,7 @@ impl ConfigArgs {
                 .or(entry.max_response_bytes)
                 .or(defaults.max_response_bytes)
                 .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES),
+            token_command,
         })
     }
 }
@@ -632,6 +701,71 @@ mod tests {
         assert_eq!(
             api.headers,
             vec![("Authorization".to_string(), "Bearer abc".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_token_command_is_carried_through_and_drops_no_static_header() {
+        let api = only(ConfigArgs {
+            token_command: Some("echo abc".into()),
+            ..args()
+        });
+        assert_eq!(api.token_command.as_deref(), Some("echo abc"));
+        assert!(
+            api.headers.is_empty(),
+            "no static Authorization header when a command supplies it"
+        );
+    }
+
+    #[test]
+    fn a_token_and_a_token_command_at_the_same_level_are_rejected() {
+        let err = ConfigArgs {
+            token: Some("abc".into()),
+            token_command: Some("echo abc".into()),
+            ..args()
+        }
+        .resolve()
+        .expect_err("rejected");
+        assert!(err.to_string().contains("token_command"), "got: {err}");
+    }
+
+    #[test]
+    fn an_entrys_own_token_overrides_a_shared_token_command() {
+        let config = config_from(
+            r#"
+            token_command = "echo shared"
+
+            [[api]]
+            name = "own-token"
+            spec = "a.json"
+            token = "own"
+        "#,
+        );
+        let api = &config.apis[0];
+        assert_eq!(api.token_command, None, "the entry's own token wins outright");
+        assert_eq!(
+            api.headers,
+            vec![("Authorization".to_string(), "Bearer own".to_string())]
+        );
+    }
+
+    #[test]
+    fn an_entrys_own_token_command_overrides_a_shared_token() {
+        let config = config_from(
+            r#"
+            token = "shared"
+
+            [[api]]
+            name = "own-command"
+            spec = "a.json"
+            token_command = "echo own"
+        "#,
+        );
+        let api = &config.apis[0];
+        assert_eq!(api.token_command.as_deref(), Some("echo own"));
+        assert!(
+            api.headers.is_empty(),
+            "the shared static token must not also be sent"
         );
     }
 

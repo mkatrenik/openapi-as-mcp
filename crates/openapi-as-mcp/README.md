@@ -6,8 +6,25 @@ from its parameters and request body. Nothing about the API is compiled in, so a
 up the moment the document does.
 
 Use it when an API is worth handing to an agent but not worth a hand-written MCP server. When the
-tools need to *do* something the API does not — derive a path, join two calls, explain a failure —
+tools need to _do_ something the API does not — derive a path, join two calls, explain a failure —
 write a real server instead.
+
+## Install
+
+```bash
+cargo install --path crates/openapi-as-mcp
+```
+
+Installs the `openapi-as-mcp` binary to `~/.cargo/bin` (make sure it's on `PATH`). Run from the
+workspace root, or point `--path` at the crate directory from wherever you are.
+
+Or straight from GitHub, without cloning first:
+
+```bash
+cargo install --git https://github.com/mkatrenik/openapi-as-mcp openapi-as-mcp
+```
+
+The package name after the URL is required since the repo is a workspace with more than one crate.
 
 ## Quick start
 
@@ -40,9 +57,12 @@ argument object at once.
       "command": "openapi-as-mcp",
       "args": [
         "serve",
-        "--spec", "/path/to/openapi.yaml",
-        "--base-url", "https://api.example.com",
-        "--token", "…"
+        "--spec",
+        "/path/to/openapi.yaml",
+        "--base-url",
+        "https://api.example.com",
+        "--token",
+        "…"
       ]
     }
   }
@@ -54,15 +74,15 @@ fails loudly instead of hanging.
 
 ## What the mapping looks like
 
-| OpenAPI | MCP |
-| --- | --- |
-| operation | one tool, named after `operationId` (falling back to `get_recipes_latest`) |
-| `summary` / `description` | the tool description, always prefixed with `GET /recipes/{id}` |
-| path, query, header, cookie parameters | flat top-level arguments |
-| request body | the `body` argument |
-| `#/components/schemas/X` | `#/$defs/X`, with the transitive closure copied into `$defs` |
-| `nullable: true`, boolean `exclusiveMinimum` | their JSON Schema 2020-12 equivalents |
-| GET/HEAD/OPTIONS | `readOnlyHint`; DELETE/PUT/PATCH get `destructiveHint` |
+| OpenAPI                                      | MCP                                                                        |
+| -------------------------------------------- | -------------------------------------------------------------------------- |
+| operation                                    | one tool, named after `operationId` (falling back to `get_recipes_latest`) |
+| `summary` / `description`                    | the tool description, always prefixed with `GET /recipes/{id}`             |
+| path, query, header, cookie parameters       | flat top-level arguments                                                   |
+| request body                                 | the `body` argument                                                        |
+| `#/components/schemas/X`                     | `#/$defs/X`, with the transitive closure copied into `$defs`               |
+| `nullable: true`, boolean `exclusiveMinimum` | their JSON Schema 2020-12 equivalents                                      |
+| GET/HEAD/OPTIONS                             | `readOnlyHint`; DELETE/PUT/PATCH get `destructiveHint`                     |
 
 Parameters are flat on purpose: an agent filling in `{"recipe_id": "…", "page": 2}` does not care
 which of those rides in the path and which in the query string. The input schema is closed, so a
@@ -71,24 +91,25 @@ request.
 
 A successful call returns the HTTP status, the request URL, and the response — parsed as `json`
 when it is JSON, otherwise as `text`. A non-2xx response, a timeout or a bad argument is a
-*tool-level* error carrying the upstream message, so the model can read it and try again.
+_tool-level_ error carrying the upstream message, so the model can read it and try again.
 
 ## Options
 
-| Flag | |
-| --- | --- |
-| `--config`, `-c` | TOML config file; `""` means "no file, and do not go looking" |
-| `--spec`, `-s` | document to serve; a path or an `http(s)` URL. Repeatable |
-| `--api` | serve only these `[[api]]` entries of the config file, by name |
-| `--base-url` | where requests go; defaults to the document's first `servers[].url` |
-| `--token` | sent as `Authorization: Bearer …` |
-| `--header`, `-H` | extra header, `Name: value`. Repeatable |
-| `--read-only` | expose only GET/HEAD/OPTIONS |
-| `--include` / `--exclude` | regexes, matched against the tool name, the method and the path independently |
-| `--tool-prefix` | keeps two of these apart in one client |
-| `--timeout` | per-request, in seconds (default 60) |
-| `--max-response-bytes` | ceiling on one response (default 256 KiB) |
-| `--log` | log filter; diagnostics always go to stderr |
+| Flag                      |                                                                                     |
+| ------------------------- | ----------------------------------------------------------------------------------- |
+| `--config`, `-c`          | TOML config file; `""` means "no file, and do not go looking"                       |
+| `--spec`, `-s`            | document to serve; a path or an `http(s)` URL. Repeatable                           |
+| `--api`                   | serve only these `[[api]]` entries of the config file, by name                      |
+| `--base-url`              | where requests go; defaults to the document's first `servers[].url`                 |
+| `--token`                 | sent as `Authorization: Bearer …`                                                   |
+| `--token-command`         | shell command run before every request; its trimmed stdout becomes the bearer token |
+| `--header`, `-H`          | extra header, `Name: value`. Repeatable                                             |
+| `--read-only`             | expose only GET/HEAD/OPTIONS                                                        |
+| `--include` / `--exclude` | regexes, matched against the tool name, the method and the path independently       |
+| `--tool-prefix`           | keeps two of these apart in one client                                              |
+| `--timeout`               | per-request, in seconds (default 60)                                                |
+| `--max-response-bytes`    | ceiling on one response (default 256 KiB)                                           |
+| `--log`                   | log filter; diagnostics always go to stderr                                         |
 
 Startup fails, rather than serving something useless, when a document has no base URL to send its
 requests to or when the filters leave no operations at all.
@@ -125,14 +146,24 @@ include = ["^/invoices"]
 ```
 
 See [example.config.toml](example.config.toml) for the annotated version. The keys are the flag
-names: `spec` (or `specs`, a list, at the top level), `base_url`, `token`, `headers`, `read_only`,
-`include`, `exclude`, `tool_prefix`, `timeout`, `max_response_bytes` — kebab-case spellings work
-too. A misspelled key is an error rather than a silently ignored line.
+names: `spec` (or `specs`, a list, at the top level), `base_url`, `token`, `token_command`,
+`headers`, `read_only`, `include`, `exclude`, `tool_prefix`, `timeout`, `max_response_bytes` —
+kebab-case spellings work too. A misspelled key is an error rather than a silently ignored line.
 
 `${VAR}` and `${VAR:-fallback}` are expanded in `spec`, `base_url`, `token` and header values, so
 a token stays in the environment and the file stays committable.
 
-Precedence, most specific first: a CLI flag, the `[[api]]` entry, the file's top-level defaults. A `--spec` on the command line is served *in addition to* the file's entries,
+For a token that expires or lives in a secret manager, use `token_command` instead of `token`: it
+names a shell command, run again before every request, whose trimmed stdout becomes the bearer
+token — e.g. `token_command = "gcloud auth print-identity-token"` or
+`token_command = "op read op://vault/item/token"`. Nothing secret needs to be in the file or the
+environment at all. `token` and `token_command` cannot both be set at the same level, and whichever
+one the most specific level sets wins outright — an `[[api]]` entry's plain `token` overrides a
+`token_command` declared at the top level, and vice versa. `token_command` is run through a shell,
+so it is not passed through the `${VAR}` expansion above; it can expand its own environment as it
+runs.
+
+Precedence, most specific first: a CLI flag, the `[[api]]` entry, the file's top-level defaults. A `--spec` on the command line is served _in addition to_ the file's entries,
 never instead of them, and `--api recipes` narrows the run to the entries you name:
 
 ```bash

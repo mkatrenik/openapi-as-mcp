@@ -26,6 +26,9 @@ pub enum CallError {
         status: StatusCode,
         body: String,
     },
+
+    #[error("token_command {command:?} {reason}")]
+    Auth { command: String, reason: String },
 }
 
 #[derive(Debug)]
@@ -33,6 +36,7 @@ pub struct Executor {
     client: Client,
     base_url: String,
     headers: Vec<(String, String)>,
+    token_command: Option<String>,
     max_response_bytes: usize,
 }
 
@@ -48,6 +52,7 @@ impl Executor {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
             headers: api.headers.clone(),
+            token_command: api.token_command.clone(),
             max_response_bytes: api.max_response_bytes,
         })
     }
@@ -71,6 +76,10 @@ impl Executor {
         let mut request = self.client.request(method, &url);
         for (name, value) in &self.headers {
             request = request.header(name, value);
+        }
+        if let Some(command) = &self.token_command {
+            let token = run_token_command(command).await?;
+            request = request.header("Authorization", format!("Bearer {token}"));
         }
 
         let mut cookies = Vec::new();
@@ -266,6 +275,38 @@ fn expand(value: &Value) -> Vec<String> {
         Value::Array(items) => items.iter().map(render).collect(),
         other => vec![render(other)],
     }
+}
+
+/// Runs `token_command` in a shell and returns its trimmed stdout as the bearer token. Run again
+/// for every request, so a token that expires or comes from a secret manager never goes stale.
+async fn run_token_command(command: &str) -> Result<String, CallError> {
+    let (shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
+    let auth_err = |reason: String| CallError::Auth {
+        command: command.to_string(),
+        reason,
+    };
+
+    let output = tokio::process::Command::new(shell)
+        .arg(flag)
+        .arg(command)
+        .output()
+        .await
+        .map_err(|source| auth_err(format!("could not be run: {source}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(auth_err(format!(
+            "exited with {}: {}",
+            output.status,
+            stderr.trim()
+        )));
+    }
+
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() {
+        return Err(auth_err("produced no output".to_string()));
+    }
+    Ok(token)
 }
 
 fn truncate(body: &str, max: usize) -> (String, bool) {
@@ -473,6 +514,43 @@ mod tests {
             .expect("call succeeds");
         assert_eq!(payload["truncated"], true);
         assert_eq!(payload["text"].as_str().unwrap().len(), 100);
+    }
+
+    #[tokio::test]
+    async fn a_token_command_supplies_a_fresh_bearer_header() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/recipes/x"))
+            .and(header("Authorization", "Bearer from-command"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+
+        let api = api();
+        let mut config = api_config();
+        config.token_command = Some("echo from-command".to_string());
+        let executor = Executor::new(&config, server.uri()).expect("client builds");
+
+        let payload = executor
+            .call(&operation(&api, "getRecipe"), &args(json!({"id": "x"})))
+            .await
+            .expect("call succeeds");
+        assert_eq!(payload["status"], 200);
+    }
+
+    #[tokio::test]
+    async fn a_failing_token_command_is_a_clear_error() {
+        let api = api();
+        let mut config = api_config();
+        config.token_command = Some("exit 1".to_string());
+        let executor = Executor::new(&config, "http://127.0.0.1:1".to_string())
+            .expect("client builds");
+
+        let err = executor
+            .call(&operation(&api, "getRecipe"), &args(json!({"id": "x"})))
+            .await
+            .expect_err("rejected before any request");
+        assert!(err.to_string().contains("exit 1"), "got: {err}");
     }
 
     #[tokio::test]
