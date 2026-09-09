@@ -99,7 +99,8 @@ _tool-level_ error carrying the upstream message, so the model can read it and t
 | ------------------------- | ----------------------------------------------------------------------------------- |
 | `--config`, `-c`          | TOML config file; `""` means "no file, and do not go looking"                       |
 | `--spec`, `-s`            | document to serve; a path or an `http(s)` URL. Repeatable                           |
-| `--api`                   | serve only these `[[api]]` entries of the config file, by name                      |
+| `--api`                   | serve only these `[[api]]` entries of the config file, by name or `group/name`      |
+| `--group`                 | serve only these `[group.…]` tables of the config file, by name. Repeatable         |
 | `--base-url`              | where requests go; defaults to the document's first `servers[].url`                 |
 | `--token`                 | sent as `Authorization: Bearer …`                                                   |
 | `--token-command`         | shell command run before every request; its trimmed stdout becomes the bearer token |
@@ -170,6 +171,51 @@ never instead of them, and `--api recipes` narrows the run to the entries you na
 openapi-as-mcp list --api recipes          # one document out of the file
 openapi-as-mcp serve --api recipes --api billing
 ```
+
+### Groups
+
+When the same set of APIs exists in more than one environment, put each set in a `[group.…]`
+table. The group's own keys are defaults for its entries, sitting between the entry and the file's
+top level, and `--group` serves one set at a time:
+
+```toml
+timeout = 30
+
+[group.prod]
+tool_prefix = "prod_"
+
+[[group.prod.api]]
+name = "recipes"
+spec = "https://recipes.internal/openapi.json"
+base_url = "https://recipes.internal"
+
+[[group.prod.api]]
+name = "billing"
+spec = "https://billing.internal/openapi.json"
+base_url = "https://billing.internal"
+
+[group.stg]
+tool_prefix = "stg_"
+
+[[group.stg.api]]
+name = "recipes"
+spec = "https://recipes.stg.internal/openapi.json"
+base_url = "https://recipes.stg.internal"
+```
+
+```bash
+openapi-as-mcp serve --group prod        # one environment
+openapi-as-mcp serve                     # every group, plus any ungrouped [[api]]
+```
+
+A grouped entry is named `prod/recipes` in logs and errors, so one name may be reused in every
+group. `--api` takes either spelling: `--api prod/recipes` is that one entry, `--api recipes` is
+the entry of that name in every group still selected. Groups do not nest, and precedence in full,
+most specific first, is: a CLI flag, the `[[api]]` entry, its `[group.…]` table, the file's
+top-level defaults.
+
+Serving several groups at once means two documents' worth of overlapping tool names; give each
+group a `tool_prefix`, or pick one group with `--group`.
 
 An MCP client entry can then be one line of arguments:
 

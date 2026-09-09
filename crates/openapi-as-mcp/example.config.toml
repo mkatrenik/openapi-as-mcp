@@ -34,3 +34,27 @@ base_url = "https://gateway.internal"
 # `token` for one that expires or lives in a secret manager — nothing secret needs to be in this
 # file. Mutually exclusive with `token` at the same level.
 token_command = "gcloud auth print-identity-token"
+
+# Groups: the same APIs in more than one environment. A [group.<name>] table holds what its
+# entries inherit — between the entry and the top-level defaults above — and `--group staging`
+# serves that set alone. Without `--group`, every group is served, alongside the [[api]] entries
+# above, which belong to no group.
+#
+# A grouped entry is named `<group>/<name>`, so a name may be reused in every group, and `--api`
+# takes either `--api staging/recipes` or `--api recipes` (the entry of that name in each group).
+# Groups do not nest.
+
+[group.staging]
+tool_prefix = "stg_"                     # keeps the two environments' tools apart in one client
+token_command = "gcloud auth print-identity-token"
+
+[[group.staging.api]]
+name = "recipes"
+spec = "https://recipes.staging.internal/openapi.json"
+base_url = "https://recipes.staging.internal"
+
+[[group.staging.api]]
+name = "billing"
+spec = "https://billing.staging.internal/openapi.json"
+base_url = "https://billing.staging.internal"
+read_only = true                         # overrides nothing above; the group sets no read_only

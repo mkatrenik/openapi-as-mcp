@@ -37,12 +37,7 @@ const DISCOVERED_CONFIG_PATHS: [&str; 2] = [
 pub struct ConfigArgs {
     /// TOML config file. Defaults to ./openapi-as-mcp.toml, then
     /// ~/.config/openapi-as-mcp/config.toml.
-    #[arg(
-        long = "config",
-        short = 'c',
-        value_name = "PATH",
-        global = true
-    )]
+    #[arg(long = "config", short = 'c', value_name = "PATH", global = true)]
     /// A `String` rather than a `PathBuf` because clap's path parser rejects an empty value, and
     /// `--config ""` is the explicit "no file, and do not go looking".
     pub config: Option<String>,
@@ -60,7 +55,8 @@ pub struct ConfigArgs {
     )]
     pub specs: Vec<String>,
 
-    /// Serve only these `[[api]]` entries of the config file, by `name`. Repeatable.
+    /// Serve only these `[[api]]` entries of the config file, by `name` — either the bare name
+    /// or the `group/name` it reads as when the entry lives in a `[group.…]` table. Repeatable.
     #[arg(
         long = "api",
         value_name = "NAME",
@@ -69,12 +65,18 @@ pub struct ConfigArgs {
     )]
     pub api: Vec<String>,
 
-    /// Base URL for the requests. Defaults to the first `servers[].url` in each document.
+    /// Serve only these `[group.…]` tables of the config file, by name. Repeatable. Without it
+    /// every group is served, alongside any entry that belongs to none.
     #[arg(
-        long = "base-url",
-        value_name = "URL",
+        long = "group",
+        value_name = "NAME",
+        value_delimiter = ',',
         global = true
     )]
+    pub groups: Vec<String>,
+
+    /// Base URL for the requests. Defaults to the first `servers[].url` in each document.
+    #[arg(long = "base-url", value_name = "URL", global = true)]
     pub base_url: Option<String>,
 
     /// Bearer token, sent as `Authorization: Bearer <token>`.
@@ -97,28 +99,16 @@ pub struct ConfigArgs {
     pub read_only: bool,
 
     /// Keep only operations whose tool name, method or path matches this regex. Repeatable.
-    #[arg(
-        long = "include",
-        value_name = "REGEX",
-        global = true
-    )]
+    #[arg(long = "include", value_name = "REGEX", global = true)]
     pub include: Vec<String>,
 
     /// Drop operations whose tool name, method or path matches this regex. Applied after
     /// --include. Repeatable.
-    #[arg(
-        long = "exclude",
-        value_name = "REGEX",
-        global = true
-    )]
+    #[arg(long = "exclude", value_name = "REGEX", global = true)]
     pub exclude: Vec<String>,
 
     /// Prefix every tool name with this, to keep two servers apart in one client.
-    #[arg(
-        long = "tool-prefix",
-        value_name = "PREFIX",
-        global = true
-    )]
+    #[arg(long = "tool-prefix", value_name = "PREFIX", global = true)]
     pub tool_prefix: Option<String>,
 
     /// Per-request timeout in seconds.
@@ -192,6 +182,38 @@ struct Settings {
 
     #[serde(default, alias = "apis")]
     api: Vec<Settings>,
+
+    /// Top level only: named sets of entries, each with its own defaults. `[group.prod]` holds
+    /// what every `[[group.prod.api]]` inherits, and `--group prod` serves that set alone.
+    #[serde(default, alias = "groups")]
+    group: BTreeMap<String, Settings>,
+}
+
+/// One `[[api]]` entry paired with the level it inherits from, before the flags have their say.
+struct Candidate<'a> {
+    /// The `[group.…]` table it came from, if any. Part of the label, and what `--group` filters.
+    group: Option<String>,
+    /// That table's own keys, which sit between the entry and the file's top-level defaults.
+    group_defaults: Option<&'a Settings>,
+    entry: Settings,
+}
+
+impl Candidate<'_> {
+    /// How the entry is named on the command line and in logs: `prod/recipes` inside a group, so
+    /// that two groups may reuse one name, and the bare name outside one.
+    fn label(&self) -> Option<String> {
+        let name = self.entry.name.as_ref()?;
+        Some(match &self.group {
+            Some(group) => format!("{group}/{name}"),
+            None => name.clone(),
+        })
+    }
+
+    /// `--api` accepts either spelling, so `--api recipes` still reaches `prod/recipes`.
+    fn matches(&self, wanted: &str) -> bool {
+        self.label().is_some_and(|label| label == wanted)
+            || self.entry.name.as_deref() == Some(wanted)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -273,6 +295,9 @@ impl Settings {
         for entry in &mut self.api {
             entry.expand_env()?;
         }
+        for group in self.group.values_mut() {
+            group.expand_env()?;
+        }
         Ok(())
     }
 
@@ -311,56 +336,127 @@ impl ConfigArgs {
             None => what.to_string(),
         };
 
-        if let Some(nested) = defaults.api.iter().find(|entry| !entry.api.is_empty()) {
-            bail!(
-                "{}: `[[api]]` entries cannot contain their own `[[api]]`",
-                source(nested.name.as_deref().unwrap_or("an [[api]] entry"))
-            );
-        }
-
         reject_conflicting_token(
             self.token.as_ref(),
             self.token_command.as_ref(),
             "--token / --token-command",
         )?;
-        reject_conflicting_token(
-            defaults.token.as_ref(),
-            defaults.token_command.as_ref(),
-            &source("the top-level config"),
-        )?;
-        for entry in &defaults.api {
+
+        // The top-level defaults first, then each group, so the tool order matches how the file
+        // reads — an ungrouped entry before any group's, whatever the group is called.
+        let mut levels: Vec<(Option<String>, &Settings)> = vec![(None, &defaults)];
+        levels.extend(
+            defaults
+                .group
+                .iter()
+                .map(|(name, group)| (Some(name.clone()), group)),
+        );
+
+        let mut candidates: Vec<Candidate> = Vec::new();
+        for (group, level) in levels {
+            let whose = |what: &str| match &group {
+                Some(name) => source(&format!("{what} of group {name:?}")),
+                None => source(what),
+            };
+
+            if group.is_some() && !level.group.is_empty() {
+                bail!(
+                    "{}",
+                    whose("nested `[group]` tables are not supported; the defaults")
+                );
+            }
             reject_conflicting_token(
-                entry.token.as_ref(),
-                entry.token_command.as_ref(),
-                &source(entry.name.as_deref().unwrap_or("an [[api]] entry")),
+                level.token.as_ref(),
+                level.token_command.as_ref(),
+                &match &group {
+                    Some(_) => whose("the defaults"),
+                    None => source("the top-level config"),
+                },
             )?;
+
+            for entry in &level.api {
+                let named = || {
+                    entry
+                        .name
+                        .as_deref()
+                        .unwrap_or("an [[api]] entry")
+                        .to_string()
+                };
+                if !entry.api.is_empty() {
+                    bail!(
+                        "{}: `[[api]]` entries cannot contain their own `[[api]]`",
+                        source(&named())
+                    );
+                }
+                if !entry.group.is_empty() {
+                    bail!(
+                        "{}: `[[api]]` entries cannot contain a `[group]` table",
+                        source(&named())
+                    );
+                }
+                reject_conflicting_token(
+                    entry.token.as_ref(),
+                    entry.token_command.as_ref(),
+                    &source(&named()),
+                )?;
+                candidates.push(Candidate {
+                    group: group.clone(),
+                    group_defaults: group.as_ref().map(|_| level),
+                    entry: entry.clone(),
+                });
+            }
+
+            // A bare `spec`/`specs` at a level is shorthand for entries carrying nothing else.
+            for spec in level.spec.iter().flat_map(Specs::to_vec) {
+                candidates.push(Candidate {
+                    group: group.clone(),
+                    group_defaults: group.as_ref().map(|_| level),
+                    entry: Settings {
+                        spec: Some(Specs::One(spec)),
+                        ..Settings::default()
+                    },
+                });
+            }
         }
 
-        // File first, then the flags, so the resulting tool order matches how the config reads.
-        let mut entries = defaults.api.clone();
-        for spec in defaults.spec.iter().flat_map(Specs::to_vec) {
-            entries.push(Settings {
-                spec: Some(Specs::One(spec)),
-                ..Settings::default()
-            });
+        // `--group` narrows to whole sets, `--api` to individual entries; a `--spec` given on the
+        // command line is an explicit ask and is never filtered out, so it is appended afterwards.
+        if !self.groups.is_empty() {
+            let known: Vec<&String> = defaults.group.keys().collect();
+            if let Some(wanted) = self
+                .groups
+                .iter()
+                .find(|wanted| !defaults.group.contains_key(*wanted))
+            {
+                bail!(
+                    "--group {wanted:?} matches no [group] table; {}",
+                    if known.is_empty() {
+                        source("no groups are declared")
+                    } else {
+                        format!(
+                            "known groups: {}",
+                            known
+                                .iter()
+                                .map(|name| name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    }
+                );
+            }
+            candidates
+                .retain(|candidate| matches!(&candidate.group, Some(g) if self.groups.contains(g)));
         }
 
-        // `--api` selects among the file's named entries; a `--spec` given on the command line is
-        // an explicit ask and is never filtered out, so it is appended afterwards.
         if !self.api.is_empty() {
-            let known: Vec<String> = entries.iter().filter_map(|e| e.name.clone()).collect();
-            entries.retain(|entry| {
-                entry
-                    .name
-                    .as_ref()
-                    .is_some_and(|name| self.api.iter().any(|wanted| wanted == name))
-            });
-            if entries.is_empty() {
+            let known: Vec<String> = candidates.iter().filter_map(Candidate::label).collect();
+            candidates.retain(|candidate| self.api.iter().any(|wanted| candidate.matches(wanted)));
+            if candidates.is_empty() {
                 bail!(
                     "--api {:?} matches no [[api]] entry; {}",
                     self.api.join(", "),
                     if known.is_empty() {
-                        source("no named [[api]] entries").to_string()
+                        source("no named [[api]] entries")
                     } else {
                         format!("known names: {}", known.join(", "))
                     }
@@ -369,22 +465,26 @@ impl ConfigArgs {
         }
 
         for spec in &self.specs {
-            entries.push(Settings {
-                spec: Some(Specs::One(spec.clone())),
-                ..Settings::default()
+            candidates.push(Candidate {
+                group: None,
+                group_defaults: None,
+                entry: Settings {
+                    spec: Some(Specs::One(spec.clone())),
+                    ..Settings::default()
+                },
             });
         }
 
-        if entries.is_empty() {
+        if candidates.is_empty() {
             bail!(
                 "no OpenAPI document given; pass --spec <path-or-url>, or declare [[api]] \
                  entries in a config file (--config)"
             );
         }
 
-        let mut apis = Vec::with_capacity(entries.len());
-        for entry in &entries {
-            apis.push(self.api_config(entry, &defaults)?);
+        let mut apis = Vec::with_capacity(candidates.len());
+        for candidate in &candidates {
+            apis.push(self.api_config(candidate, &defaults)?);
         }
 
         Ok(Config {
@@ -426,13 +526,24 @@ impl ConfigArgs {
             .expand_env()
             .with_context(|| format!("in {}", path.display()))?;
 
-        tracing::info!(config = %path.display(), apis = settings.api.len(), "loaded config file");
+        let grouped: usize = settings.group.values().map(|group| group.api.len()).sum();
+        tracing::info!(
+            config = %path.display(),
+            apis = settings.api.len() + grouped,
+            groups = settings.group.len(),
+            "loaded config file"
+        );
         Ok((Some(path), settings))
     }
 
-    /// Merges one entry with the file's defaults and the flags. A flag wins when it was given at
-    /// all: `Some`, a non-empty list, or `--read-only`, which can only ever restrict.
-    fn api_config(&self, entry: &Settings, defaults: &Settings) -> anyhow::Result<ApiConfig> {
+    /// Merges one entry with its group's defaults, the file's defaults and the flags. A flag wins
+    /// when it was given at all: `Some`, a non-empty list, or `--read-only`, which can only ever
+    /// restrict. Below the flags it is the most specific level that sets a key: the entry, then
+    /// its `[group.…]` table, then the file's top level.
+    fn api_config(&self, candidate: &Candidate, defaults: &Settings) -> anyhow::Result<ApiConfig> {
+        let entry = &candidate.entry;
+        let empty = Settings::default();
+        let group = candidate.group_defaults.unwrap_or(&empty);
         let spec = entry
             .spec
             .as_ref()
@@ -449,6 +560,7 @@ impl ConfigArgs {
 
         // Least specific first, so a later duplicate of the same header name wins.
         let mut headers = defaults.header_list()?;
+        headers.extend(group.header_list()?);
         headers.extend(entry.header_list()?);
         if let Some(token) = self.token.as_ref().filter(|t| !t.trim().is_empty()) {
             headers.push(("Authorization".to_string(), format!("Bearer {token}")));
@@ -471,6 +583,7 @@ impl ConfigArgs {
         let token_command = [
             (self.token_command.as_ref(), self.token.as_ref()),
             (entry.token_command.as_ref(), entry.token.as_ref()),
+            (group.token_command.as_ref(), group.token.as_ref()),
             (defaults.token_command.as_ref(), defaults.token.as_ref()),
         ]
         .into_iter()
@@ -483,56 +596,83 @@ impl ConfigArgs {
             headers.retain(|(name, _)| !name.eq_ignore_ascii_case("authorization"));
         }
 
-        let picked = |flag: Option<&String>, entry: Option<&String>, default: Option<&String>| {
-            flag.or(entry).or(default).cloned()
+        let picked =
+            |flag: Option<&String>,
+             entry: Option<&String>,
+             group: Option<&String>,
+             default: Option<&String>| flag.or(entry).or(group).or(default).cloned();
+        let patterns = |flag: &[String],
+                        entry: &Option<Vec<String>>,
+                        group: &Option<Vec<String>>,
+                        default: &Option<Vec<String>>| {
+            if !flag.is_empty() {
+                flag.to_vec()
+            } else {
+                entry
+                    .clone()
+                    .or_else(|| group.clone())
+                    .or_else(|| default.clone())
+                    .unwrap_or_default()
+            }
         };
-        let patterns =
-            |flag: &[String], entry: &Option<Vec<String>>, default: &Option<Vec<String>>| {
-                if !flag.is_empty() {
-                    flag.to_vec()
-                } else {
-                    entry
-                        .clone()
-                        .or_else(|| default.clone())
-                        .unwrap_or_default()
-                }
-            };
 
         Ok(ApiConfig {
-            label: entry.name.clone().unwrap_or_else(|| spec.clone()),
+            label: candidate.label().unwrap_or_else(|| match &candidate.group {
+                Some(group) => format!("{group}/{spec}"),
+                None => spec.clone(),
+            }),
             spec: Source::parse(&spec),
             // A base URL with a trailing slash and a path starting with one would produce `//`,
             // which some gateways route differently from the intended path.
             base_url: picked(
                 self.base_url.as_ref(),
                 entry.base_url.as_ref(),
+                group.base_url.as_ref(),
                 defaults.base_url.as_ref(),
             )
             .map(|url| url.trim_end_matches('/').to_string()),
             headers,
-            read_only: self.read_only || entry.read_only.or(defaults.read_only).unwrap_or(false),
+            read_only: self.read_only
+                || entry
+                    .read_only
+                    .or(group.read_only)
+                    .or(defaults.read_only)
+                    .unwrap_or(false),
             include: compile(
-                &patterns(&self.include, &entry.include, &defaults.include),
+                &patterns(
+                    &self.include,
+                    &entry.include,
+                    &group.include,
+                    &defaults.include,
+                ),
                 "include",
             )?,
             exclude: compile(
-                &patterns(&self.exclude, &entry.exclude, &defaults.exclude),
+                &patterns(
+                    &self.exclude,
+                    &entry.exclude,
+                    &group.exclude,
+                    &defaults.exclude,
+                ),
                 "exclude",
             )?,
             tool_prefix: picked(
                 self.tool_prefix.as_ref(),
                 entry.tool_prefix.as_ref(),
+                group.tool_prefix.as_ref(),
                 defaults.tool_prefix.as_ref(),
             ),
             timeout: Duration::from_secs(
                 self.timeout
                     .or(entry.timeout)
+                    .or(group.timeout)
                     .or(defaults.timeout)
                     .unwrap_or(DEFAULT_TIMEOUT_SECONDS),
             ),
             max_response_bytes: self
                 .max_response_bytes
                 .or(entry.max_response_bytes)
+                .or(group.max_response_bytes)
                 .or(defaults.max_response_bytes)
                 .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES),
             token_command,
@@ -659,6 +799,11 @@ pub mod test_support {
     }
 
     pub fn try_config_from(toml: &str) -> anyhow::Result<Config> {
+        try_config_from_args(toml, ConfigArgs::default())
+    }
+
+    /// The same, with flags on top — for the precedence the file alone cannot express.
+    pub fn try_config_from_args(toml: &str, args: ConfigArgs) -> anyhow::Result<Config> {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
             "openapi-as-mcp-{}-{}.toml",
@@ -668,7 +813,7 @@ pub mod test_support {
         std::fs::write(&path, toml).expect("writes the temp config");
         let resolved = ConfigArgs {
             config: Some(path.display().to_string()),
-            ..ConfigArgs::default()
+            ..args
         }
         .resolve();
         let _ = std::fs::remove_file(&path);
@@ -678,7 +823,7 @@ pub mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{config_from, try_config_from};
+    use super::test_support::{config_from, try_config_from, try_config_from_args};
     use super::*;
 
     fn args() -> ConfigArgs {
@@ -742,7 +887,10 @@ mod tests {
         "#,
         );
         let api = &config.apis[0];
-        assert_eq!(api.token_command, None, "the entry's own token wins outright");
+        assert_eq!(
+            api.token_command, None,
+            "the entry's own token wins outright"
+        );
         assert_eq!(
             api.headers,
             vec![("Authorization".to_string(), "Bearer own".to_string())]
@@ -1024,6 +1172,177 @@ mod tests {
                 ("Authorization".to_string(), "Bearer own".to_string()),
                 ("X-Keep".to_string(), "1".to_string()),
             ]
+        );
+    }
+
+    /// A config with the two environments the groups exist for, one name reused across both.
+    const GROUPED: &str = r#"
+        timeout = 30
+
+        [[api]]
+        name = "shared"
+        spec = "shared.json"
+
+        [group.prod]
+        base_url = "https://prod.internal"
+        tool_prefix = "prod_"
+
+        [[group.prod.api]]
+        name = "recipes"
+        spec = "prod-recipes.json"
+
+        [[group.prod.api]]
+        name = "billing"
+        spec = "prod-billing.json"
+        base_url = "https://billing.prod.internal"
+
+        [group.stg]
+        base_url = "https://stg.internal"
+
+        [[group.stg.api]]
+        name = "recipes"
+        spec = "stg-recipes.json"
+    "#;
+
+    fn labels(config: &Config) -> Vec<String> {
+        config.apis.iter().map(|api| api.label.clone()).collect()
+    }
+
+    #[test]
+    fn every_group_is_served_together_and_labelled_by_group() {
+        let config = config_from(GROUPED);
+        assert_eq!(
+            labels(&config),
+            ["shared", "prod/recipes", "prod/billing", "stg/recipes"],
+            "ungrouped entries first, then each group; a reused name stays distinct"
+        );
+    }
+
+    #[test]
+    fn a_group_supplies_defaults_between_the_entry_and_the_file() {
+        let config = config_from(GROUPED);
+        let api = |label: &str| {
+            config
+                .apis
+                .iter()
+                .find(|api| api.label == label)
+                .unwrap_or_else(|| panic!("{label} is served"))
+        };
+
+        assert_eq!(
+            api("prod/recipes").base_url.as_deref(),
+            Some("https://prod.internal"),
+            "the group's base_url reaches an entry that sets none"
+        );
+        assert_eq!(
+            api("prod/billing").base_url.as_deref(),
+            Some("https://billing.prod.internal"),
+            "the entry still wins over its group"
+        );
+        assert_eq!(api("prod/recipes").tool_prefix.as_deref(), Some("prod_"));
+        assert_eq!(api("stg/recipes").tool_prefix, None, "groups do not leak");
+        assert_eq!(api("shared").base_url, None, "nor reach an ungrouped entry");
+        assert_eq!(
+            api("prod/recipes").timeout,
+            Duration::from_secs(30),
+            "the file's top-level defaults still apply inside a group"
+        );
+    }
+
+    #[test]
+    fn group_narrows_the_run_to_whole_sets() {
+        let config = try_config_from_args(
+            GROUPED,
+            ConfigArgs {
+                groups: vec!["prod".into()],
+                ..ConfigArgs::default()
+            },
+        )
+        .expect("resolves");
+        assert_eq!(
+            labels(&config),
+            ["prod/recipes", "prod/billing"],
+            "--group drops the other groups and the ungrouped entries"
+        );
+    }
+
+    #[test]
+    fn an_unknown_group_lists_the_ones_there_are() {
+        let err = try_config_from_args(
+            GROUPED,
+            ConfigArgs {
+                groups: vec!["dev".into()],
+                ..ConfigArgs::default()
+            },
+        )
+        .expect_err("rejected");
+        assert!(err.to_string().contains("prod, stg"), "got: {err}");
+    }
+
+    #[test]
+    fn api_selects_a_grouped_entry_by_either_spelling() {
+        let qualified = try_config_from_args(
+            GROUPED,
+            ConfigArgs {
+                api: vec!["prod/recipes".into()],
+                ..ConfigArgs::default()
+            },
+        )
+        .expect("resolves");
+        assert_eq!(labels(&qualified), ["prod/recipes"]);
+
+        let bare = try_config_from_args(
+            GROUPED,
+            ConfigArgs {
+                api: vec!["recipes".into()],
+                ..ConfigArgs::default()
+            },
+        )
+        .expect("resolves");
+        assert_eq!(
+            labels(&bare),
+            ["prod/recipes", "stg/recipes"],
+            "the bare name reaches the entry of that name in every group"
+        );
+    }
+
+    #[test]
+    fn a_group_may_not_contain_another_group() {
+        let err = try_config_from(
+            r#"
+            [group.prod]
+            spec = "a.json"
+
+            [group.prod.group.inner]
+            spec = "b.json"
+        "#,
+        )
+        .expect_err("rejected");
+        assert!(err.to_string().contains("nested"), "got: {err}");
+    }
+
+    #[test]
+    fn a_groups_token_command_is_inherited_and_overridable() {
+        let config = config_from(
+            r#"
+            [group.prod]
+            token_command = "echo group"
+
+            [[group.prod.api]]
+            name = "inherits"
+            spec = "a.json"
+
+            [[group.prod.api]]
+            name = "own"
+            spec = "b.json"
+            token = "own"
+        "#,
+        );
+        assert_eq!(config.apis[0].token_command.as_deref(), Some("echo group"));
+        assert_eq!(config.apis[1].token_command, None);
+        assert_eq!(
+            config.apis[1].headers,
+            vec![("Authorization".to_string(), "Bearer own".to_string())]
         );
     }
 }
