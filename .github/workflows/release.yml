@@ -1,0 +1,125 @@
+name: Build binaries
+
+# Runs on every tag push (attaching the binaries to a GitHub Release) and on demand from the
+# Actions tab. Either way the archives are uploaded as workflow artifacts, so they are downloadable
+# from the run page in the GitHub UI even without a tag.
+"on":
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed by softprops/action-gh-release to create the release
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: openapi-as-mcp
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            # Cross-linking to ARM64: rustc still runs on x86_64, so it needs an ARM64-capable
+            # linker, and the `cc` crate (pulled in by ring, via rustls) needs the matching C
+            # compiler for its own build scripts.
+            linker: aarch64-linux-gnu-gcc
+            apt_packages: gcc-aarch64-linux-gnu
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-compilation toolchain
+        if: matrix.apt_packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt_packages }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Caches ~/.cargo and ./target keyed on the lockfile and target triple.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # The manifest is the single source of truth for the version; the git tag is only a trigger.
+      # Reading it here keeps artifact names correct on manual runs too, where GITHUB_REF_NAME is a
+      # branch name rather than a tag.
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r --arg name "$BIN_NAME" '.packages[] | select(.name == $name) | .version')
+          if [[ -z "$version" ]]; then
+            echo "could not read the version of $BIN_NAME from Cargo.toml" >&2
+            exit 1
+          fi
+          # On a tag build, refuse to publish a mismatch: a tag of v0.2.0 built from a manifest
+          # still saying 0.1.0 means the bump commit was forgotten.
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v${version}" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version (expected v${version})" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        shell: bash
+        env:
+          # Cargo reads the linker for a target from CARGO_TARGET_<TRIPLE>_LINKER, where the triple
+          # is upper-cased with dashes turned into underscores. Empty for native builds, which then
+          # fall back to the default linker.
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          stem="${BIN_NAME}-${version}-${{ matrix.target }}"
+          mkdir -p "dist/${stem}"
+          cp README.md "dist/${stem}/"
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            cp "target/${{ matrix.target }}/release/${BIN_NAME}.exe" "dist/${stem}/"
+            (cd dist && 7z a -tzip "${stem}.zip" "${stem}" >/dev/null)
+            echo "asset=dist/${stem}.zip" >> "$GITHUB_OUTPUT"
+          else
+            cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${stem}/"
+            (cd dist && tar czf "${stem}.tar.gz" "${stem}")
+            echo "asset=dist/${stem}.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+          echo "name=${stem}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ steps.package.outputs.asset }}
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.package.outputs.asset }}
+          generate_release_notes: true
