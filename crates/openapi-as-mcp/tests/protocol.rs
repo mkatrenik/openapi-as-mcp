@@ -225,3 +225,92 @@ async fn read_only_mode_hides_the_write_operations() {
 
     client.cancel().await.expect("shut down");
 }
+
+/// Spawn a `serve --daemon` relay whose runtime directory is `runtime_dir`, so the test can see
+/// the host's socket and log without touching the developer's real ones.
+async fn spawn_relay(
+    base_url: &str,
+    runtime_dir: &std::path::Path,
+) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_openapi-as-mcp"));
+    command
+        .args(["serve", "--daemon", "--idle-timeout", "1"])
+        .args(["--spec", &spec()])
+        .args(["--base-url", base_url])
+        .args(["--log", "info"])
+        .args(["--config", ""])
+        .env("XDG_RUNTIME_DIR", runtime_dir);
+
+    ().serve(TokioChildProcess::new(command).expect("spawn relay"))
+        .await
+        .expect("initialize through the relay")
+}
+
+#[tokio::test]
+async fn daemon_mode_serves_concurrent_sessions_from_one_host_that_exits_when_idle() {
+    let api = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/recipes/r-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "r-1"})))
+        .mount(&api)
+        .await;
+
+    // `/tmp` rather than `temp_dir()`: macOS's per-user temp dir is long enough to push the
+    // socket path past the ~104-byte limit. The mock server's port keeps runs apart.
+    let port = api.address().port();
+    let root = std::path::PathBuf::from(format!("/tmp/oam-test-{port}"));
+    let _ = std::fs::remove_dir_all(&root);
+    let runtime = root.join("openapi-as-mcp");
+
+    // Started together, so both relays race to spawn a host; the lock must leave exactly one.
+    let uri = api.uri();
+    let (first, second) = tokio::join!(spawn_relay(&uri, &root), spawn_relay(&uri, &root));
+
+    for client in [&first, &second] {
+        let result = client
+            .call_tool(
+                CallToolRequestParams::new("getRecipe")
+                    .with_arguments(args(json!({"recipe_id": "r-1"}))),
+            )
+            .await
+            .expect("call_tool");
+        assert_ne!(result.is_error, Some(true), "call should succeed");
+        assert_eq!(
+            result.structured_content.expect("payload")["json"]["id"],
+            "r-1"
+        );
+    }
+
+    let files = |ext: &str| -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(&runtime)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| path.extension().is_some_and(|e| e == ext))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    assert_eq!(files("sock").len(), 1, "one configuration, one socket");
+    let log = std::fs::read_to_string(&files("log")[0]).expect("host log");
+    assert_eq!(
+        log.matches("daemon listening").count(),
+        1,
+        "exactly one host served both sessions:\n{log}"
+    );
+
+    first.cancel().await.expect("shut down");
+    second.cancel().await.expect("shut down");
+
+    // With both sessions gone the host should notice it is idle, exit and take its socket along.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !files("sock").is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "idle host did not exit"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
