@@ -17,6 +17,8 @@
 
 mod cli;
 mod config;
+// Unix sockets and `flock` have no drop-in Windows equivalent, so shared-daemon mode is Unix-only.
+#[cfg(unix)]
 mod daemon;
 mod exec;
 mod schema;
@@ -59,11 +61,18 @@ async fn main() -> anyhow::Result<ExitCode> {
     };
 
     let config = cli.config.resolve().context("invalid configuration")?;
-    if serve.daemon_host {
-        return daemon::host(config, Duration::from_secs(serve.idle_timeout)).await;
+    #[cfg(unix)]
+    {
+        if serve.daemon_host {
+            return daemon::host(config, Duration::from_secs(serve.idle_timeout)).await;
+        }
+        if serve.daemon {
+            return daemon::relay(&config).await;
+        }
     }
+    #[cfg(not(unix))]
     if serve.daemon {
-        return daemon::relay(&config).await;
+        anyhow::bail!("--daemon is only supported on Unix");
     }
 
     let apis = spec::load_all(&config.specs(), config.timeout).await?;
