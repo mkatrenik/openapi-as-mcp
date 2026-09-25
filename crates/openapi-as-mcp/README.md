@@ -72,6 +72,29 @@ argument object at once.
 The subcommand is not optional: a bare invocation prints help, so an entry that forgets `serve`
 fails loudly instead of hanging.
 
+### One shared process: `--daemon`
+
+A client starts one server per session, so five agent sessions mean five processes, each loading
+the same documents. Add `--daemon` to share one instead:
+
+```json
+"args": ["serve", "--daemon", "--config", "/path/to/openapi-as-mcp.toml"]
+```
+
+The launched process becomes a thin relay between its stdio and a Unix socket. Behind the socket
+is one shared server that loads the documents once and serves every session; the first relay
+starts it, and later ones connect to it. There is one shared server per _effective
+configuration_: `--group prod` and `--group stg` get separate ones, while every session asking for
+the same thing shares one. A file lock makes sure two sessions starting at the same moment still
+end up with a single server.
+
+The server exits after `--idle-timeout` seconds with no sessions (default 300; `0` keeps it
+running), which is also how it picks up a changed document: the next session after that starts a
+fresh one. It keeps the environment of the session that started it, which matters for `${VAR}`
+and `token_command`. Its socket, lock and log live in `$XDG_RUNTIME_DIR/openapi-as-mcp/`, or
+`$TMPDIR/openapi-as-mcp-$USER/` when that is unset; a server that fails to start reports the end of
+its log through the relay. Unix only.
+
 ## What the mapping looks like
 
 | OpenAPI                                      | MCP                                                                        |
@@ -111,6 +134,8 @@ _tool-level_ error carrying the upstream message, so the model can read it and t
 | `--timeout`               | per-request, in seconds (default 60)                                                |
 | `--max-response-bytes`    | ceiling on one response (default 256 KiB)                                           |
 | `--log`                   | log filter; diagnostics always go to stderr                                         |
+| `--daemon`                | `serve` only: share one server process between sessions — see above                 |
+| `--idle-timeout`          | with `--daemon`: seconds without sessions before the shared server exits (300)      |
 
 Startup fails, rather than serving something useless, when a document has no base URL to send its
 requests to or when the filters leave no operations at all.

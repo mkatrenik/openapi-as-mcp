@@ -12,21 +12,26 @@
 //! Every other subcommand is an ordinary CLI run — see `src/cli.rs`, the only module allowed to
 //! write there. A bare invocation prints help; the server must be asked for explicitly, so an MCP
 //! client entry has to end in `… serve`.
+//!
+//! `serve --daemon` shares one server process between sessions — see `src/daemon.rs`.
 
 mod cli;
 mod config;
+mod daemon;
 mod exec;
 mod schema;
 mod server;
 mod spec;
 
+use std::io::IsTerminal;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
 use rmcp::{ServiceExt, transport::stdio};
 
-use crate::cli::Cli;
+use crate::cli::{Cli, Command};
 use crate::server::OpenApiMcp;
 
 #[tokio::main]
@@ -44,14 +49,23 @@ async fn main() -> anyhow::Result<ExitCode> {
     };
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
+        // Colour only for a person watching: the shared daemon's stderr is a log file.
+        .with_ansi(std::io::stderr().is_terminal())
         .with_env_filter(filter)
         .init();
 
-    if !cli.is_serve() {
+    let Command::Serve(serve) = &cli.command else {
         return cli::run(cli).await;
-    }
+    };
 
     let config = cli.config.resolve().context("invalid configuration")?;
+    if serve.daemon_host {
+        return daemon::host(config, Duration::from_secs(serve.idle_timeout)).await;
+    }
+    if serve.daemon {
+        return daemon::relay(&config).await;
+    }
+
     let apis = spec::load_all(&config.specs(), config.timeout).await?;
     let server = OpenApiMcp::new(&config, apis)?;
 

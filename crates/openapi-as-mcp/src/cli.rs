@@ -45,7 +45,7 @@ pub struct Cli {
 impl Cli {
     /// Whether this invocation is the stdio MCP server rather than a one-shot command.
     pub fn is_serve(&self) -> bool {
-        matches!(self.command, Command::Serve)
+        matches!(self.command, Command::Serve(_))
     }
 }
 
@@ -65,7 +65,7 @@ pub struct OutputArgs {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run the MCP server on stdio. This is how an MCP client launches the binary.
-    Serve,
+    Serve(ServeArgs),
 
     /// List the tools the document produces, one line of JSON each.
     List,
@@ -92,6 +92,28 @@ pub enum Command {
     },
 }
 
+#[derive(Debug, Default, Args)]
+pub struct ServeArgs {
+    /// Share one server process between every session with the same configuration: this process
+    /// relays stdio to it, starting it first when it is not running.
+    #[arg(long)]
+    pub daemon: bool,
+
+    /// With --daemon: seconds the shared server stays up with no sessions before exiting. 0 keeps
+    /// it running until killed.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_value_t = 300,
+        requires = "daemon"
+    )]
+    pub idle_timeout: u64,
+
+    /// Internal: run as the shared server itself. Added by the relay when it starts one.
+    #[arg(long = "daemon-host", hide = true, requires = "daemon")]
+    pub daemon_host: bool,
+}
+
 /// Runs one command and prints its result. `Serve` never reaches here — `main` handles it.
 pub async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let config = cli.config.resolve().context("invalid configuration")?;
@@ -100,7 +122,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let compact = cli.output.compact;
 
     match cli.command {
-        Command::Serve => unreachable!("serve is dispatched by main"),
+        Command::Serve(_) => unreachable!("serve is dispatched by main"),
 
         Command::List => emit(&describe_tools(&server), compact),
 
