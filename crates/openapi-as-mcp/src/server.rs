@@ -5,13 +5,15 @@
 //! built at startup and `call_tool` dispatches by name.
 
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use rmcp::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData as McpError,
-    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    ToolAnnotations,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use serde_json::{Map, Value, json};
@@ -64,7 +66,7 @@ impl OpenApiMcp {
                     continue;
                 }
                 let mut operation = operation.clone();
-                operation.name = unique(prefixed(settings, &operation.name), &mut taken);
+                operation.name = capped(unique(prefixed(settings, &operation.name), &mut taken));
                 tools.push(tool_for(&operation));
                 operations.insert(
                     operation.name.clone(),
@@ -221,6 +223,26 @@ fn unique(name: String, taken: &mut BTreeMap<String, usize>) -> String {
     }
 }
 
+/// The longest tool name served. MCP itself allows 128 characters, but clients namespace tools
+/// before handing them to a model — Claude Code sends `mcp__<server>__<tool>`, and the Anthropic
+/// API rejects names over 64 characters. 38 leaves room for a server name of up to 19 characters.
+const MAX_TOOL_NAME_LEN: usize = 38;
+
+/// Shortens a name over [`MAX_TOOL_NAME_LEN`] to a readable head plus a hash of the full name, so
+/// two long names that share a head still come out distinct. Names are ASCII (see
+/// `spec::sanitize`), so byte slicing cannot split a character.
+fn capped(name: String) -> String {
+    if name.len() <= MAX_TOOL_NAME_LEN {
+        return name;
+    }
+    let mut hasher = DefaultHasher::new();
+    name.hash(&mut hasher);
+    // 6 hex digits of hash plus the `_` separator.
+    let hash = format!("{:06x}", hasher.finish() & 0xff_ffff);
+    let head = name[..MAX_TOOL_NAME_LEN - hash.len() - 1].trim_end_matches(['_', '-']);
+    format!("{head}_{hash}")
+}
+
 fn tool_for(operation: &Operation) -> Tool {
     let read_only = operation.is_read_only();
     Tool::new(
@@ -284,8 +306,8 @@ fn instructions(config: &Config, apis: &[Api], tools: &[Tool]) -> String {
 }
 
 impl ServerHandler for OpenApiMcp {
-    fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+    fn get_info(&self) -> ServerConfig {
+        let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
         info.instructions = Some(self.instructions.clone());
         info
     }
@@ -546,6 +568,21 @@ mod tests {
         );
         // read_only kept one tool from the first document; the second contributes all five.
         assert_eq!(server.tools().len(), 6);
+    }
+
+    #[test]
+    fn long_names_are_capped_and_stay_distinct() {
+        let short = "prod_list_monitors".to_string();
+        assert_eq!(capped(short.clone()), short);
+
+        let one = capped("prod_get_monitoring_provider_monitoring_providers_id_get".into());
+        let two = capped("prod_get_monitoring_provider_monitoring_providers_id_put".into());
+        assert_eq!(one.len(), MAX_TOOL_NAME_LEN, "got: {one}");
+        assert!(
+            one.starts_with("prod_get_monitoring_provider"),
+            "got: {one}"
+        );
+        assert_ne!(one, two, "a shared head must not merge two tools");
     }
 
     #[test]

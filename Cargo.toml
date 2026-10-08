@@ -9,7 +9,7 @@ edition = "2024"
 # Shared versions for every tool in the workspace: a member picks a dependency up with
 # `foo = { workspace = true }` and may add features on top of what is declared here.
 [workspace.dependencies]
-rmcp = { version = "3.1", features = ["server", "macros", "transport-io"] }
+rmcp = { version = "3.5.1", features = ["server", "macros", "transport-io"] }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "time", "process"] }
 serde = { version = "1", features = ["derive"] }
