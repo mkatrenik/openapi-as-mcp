@@ -24,7 +24,7 @@ config file, so `openapi-cli` shows exactly the tools the server serves.
 Or straight from GitHub, without cloning first:
 
 ```bash
-cargo install --git https://github.com/mkatrenik/openapi-as-mcp openapi-as-mcp openapi-cli
+cargo install --git https://github.com/mkatrenik/openapi-tools openapi-as-mcp openapi-cli
 ```
 
 The package names after the URL are required since the repo is a workspace with more than one crate.
