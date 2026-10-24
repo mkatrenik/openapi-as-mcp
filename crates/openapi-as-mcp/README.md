@@ -104,6 +104,12 @@ its log through the relay. Unix only.
 | path, query, header, cookie parameters       | flat top-level arguments                                                   |
 | request body                                 | the `body` argument                                                        |
 | `#/components/schemas/X`                     | `#/$defs/X`, with the transitive closure copied into `$defs`               |
+
+Tool names are kept to 38 characters, because clients namespace them (Claude Code sends
+`mcp__<server>__<tool>`, and the Anthropic API rejects names over 64). An `operationId` that
+repeats its own request line at either end loses the copy, since the description already starts
+with it: `list_monitors_data_source_monitors_get` on `GET /data-source-monitors` becomes
+`list_monitors`. Anything still too long is cut and given a short hash suffix.
 | `nullable: true`, boolean `exclusiveMinimum` | their JSON Schema 2020-12 equivalents                                      |
 | GET/HEAD/OPTIONS                             | `readOnlyHint`; DELETE/PUT/PATCH get `destructiveHint`                     |
 

@@ -446,10 +446,88 @@ fn tool_name(operation: &Map<String, Value>, method: &str, path: &str) -> String
         .get("operationId")
         .and_then(Value::as_str)
         .filter(|id| !id.trim().is_empty())
-        .map(str::to_string)
+        .map(|id| without_request_line(id, method, path).to_string())
         .unwrap_or_else(|| format!("{method}_{path}"));
 
     sanitize(&raw)
+}
+
+/// Drops a copy of the request line from either end of an `operationId`.
+///
+/// Generated ids often restate the method and path next to the meaningful name —
+/// `list_monitors_data_source_monitors_get` for `GET /data-source-monitors` — and every tool
+/// description already starts with the request line, so the copy adds nothing but length. Length
+/// matters: clients namespace tool names (Claude Code sends `mcp__<server>__<tool>`) and the
+/// Anthropic API rejects names over 64 characters.
+///
+/// The comparison is on lowercase words (split at non-alphanumerics and camelCase humps), so
+/// separators and casing do not matter, and the request line counts in either order: path then
+/// method, or method then path. Only a copy of the *whole* request line is dropped — never a lone
+/// method or path word — so `get_recipe` and `listRecipes` keep their names. Returns `id`
+/// unchanged when there is no such copy, or when dropping it would leave nothing.
+fn without_request_line<'a>(id: &'a str, method: &str, path: &str) -> &'a str {
+    let id_spans = words(id);
+    let lowercase = |spans: &[(usize, usize)], text: &str| -> Vec<String> {
+        spans
+            .iter()
+            .map(|&(start, end)| text[start..end].to_ascii_lowercase())
+            .collect()
+    };
+    let id_words = lowercase(&id_spans, id);
+    let path_words = lowercase(&words(path), path);
+    // For `/` the "request line" would be the method alone, and `get_root` must not become `root`.
+    if path_words.is_empty() {
+        return id;
+    }
+    let method = method.to_ascii_lowercase();
+
+    let path_then_method: Vec<String> =
+        path_words.iter().cloned().chain([method.clone()]).collect();
+    let method_then_path: Vec<String> = [method].into_iter().chain(path_words).collect();
+
+    let n = path_then_method.len();
+    if n >= id_words.len() {
+        return id;
+    }
+    let is_request_line = |slice: &[String]| slice == path_then_method || slice == method_then_path;
+    let trim = |s: &'a str| s.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+
+    if is_request_line(&id_words[id_words.len() - n..]) {
+        // Cut where the copy's first word begins; keep everything before it.
+        return trim(&id[..id_spans[id_spans.len() - n].0]);
+    }
+    if is_request_line(&id_words[..n]) {
+        // Cut where the copy's last word ends; keep everything after it.
+        return trim(&id[id_spans[n - 1].1..]);
+    }
+    id
+}
+
+/// The words of `text` as byte ranges: runs of ASCII alphanumerics, further split where a
+/// lowercase letter or digit is followed by an uppercase one (`listMonitors` → `list`,
+/// `Monitors`). Ranges rather than strings, so a caller can cut the original text between words.
+fn words(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut previous = ' ';
+    for (index, ch) in text.char_indices() {
+        if !ch.is_ascii_alphanumeric() {
+            if let Some(begin) = start.take() {
+                spans.push((begin, index));
+            }
+        } else if start.is_none() {
+            start = Some(index);
+        } else if ch.is_ascii_uppercase()
+            && (previous.is_ascii_lowercase() || previous.is_ascii_digit())
+        {
+            spans.push((start.replace(index).expect("inside a word"), index));
+        }
+        previous = ch;
+    }
+    if let Some(begin) = start {
+        spans.push((begin, text.len()));
+    }
+    spans
 }
 
 /// MCP tool names are restricted to `[A-Za-z0-9_-]`; specs routinely use `.`, `/` and spaces.
@@ -525,6 +603,44 @@ paths:
         assert_eq!(from_yaml.operations.len(), 1);
         assert_eq!(from_yaml.operations[0].name, "ping");
         assert_eq!(from_yaml.operations[0].method, "GET");
+    }
+
+    #[test]
+    fn a_copy_of_the_request_line_is_dropped_from_either_end() {
+        let strip = without_request_line;
+
+        // Path then method, at the end, with doubled separators.
+        assert_eq!(
+            strip(
+                "list_provider_mappings_data_source_monitors__id__monitoring_provider_mappings_get",
+                "GET",
+                "/data-source-monitors/{id}/monitoring-provider-mappings",
+            ),
+            "list_provider_mappings"
+        );
+        // Method then path, at the start, in camelCase.
+        assert_eq!(
+            strip(
+                "getRecipesRecipeId_fetchRecipe",
+                "GET",
+                "/recipes/{recipeId}"
+            ),
+            "fetchRecipe"
+        );
+    }
+
+    #[test]
+    fn ids_without_a_whole_request_line_are_kept() {
+        let strip = without_request_line;
+
+        assert_eq!(strip("listRecipes", "GET", "/recipes"), "listRecipes");
+        assert_eq!(strip("get_recipe", "GET", "/recipes/{id}"), "get_recipe");
+        // Words must match whole: `myrecipes` is not `recipes`.
+        assert_eq!(strip("myrecipes_get", "GET", "/recipes"), "myrecipes_get");
+        // Dropping must never leave an empty name.
+        assert_eq!(strip("recipes_get", "GET", "/recipes"), "recipes_get");
+        // At `/` the method alone is not a request line.
+        assert_eq!(strip("get_home_page", "GET", "/"), "get_home_page");
     }
 
     #[test]

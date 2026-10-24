@@ -70,6 +70,56 @@ async fn initializes_and_lists_one_tool_per_operation() {
     client.cancel().await.expect("shut down");
 }
 
+/// Protocol 2026-07-28 is stateless: no `initialize`, a `server/discover` instead, and every
+/// request carries the version in `_meta`. Its schema makes `ttlMs` and `cacheScope` required on
+/// list results, and Claude Code drops the *whole* tool list when they are missing — the server
+/// connects, sends its instructions, and shows no tools. The rmcp client would hide the wire shape,
+/// so this speaks raw JSON-RPC over the binary's stdio.
+#[tokio::test]
+async fn stateless_clients_get_cache_hints_on_the_tool_list() {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_openapi-as-mcp"))
+        .args(["serve", "--spec", &spec(), "--base-url", "http://unused"])
+        .args(["--log", "warn", "--config", ""])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn server");
+
+    let meta = json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+    });
+    let mut requests = String::new();
+    for (id, method) in [(1, "server/discover"), (2, "tools/list")] {
+        let request = json!({"jsonrpc": "2.0", "id": id, "method": method,
+                             "params": {"_meta": meta}});
+        requests.push_str(&format!("{request}\n"));
+    }
+    let mut stdin = child.stdin.take().expect("stdin");
+    stdin.write_all(requests.as_bytes()).await.expect("write");
+
+    let mut lines = BufReader::new(child.stdout.take().expect("stdout")).lines();
+    let tools_list = loop {
+        let line = lines.next_line().await.expect("read").expect("a response");
+        let message: Value = serde_json::from_str(&line).expect("JSON-RPC on stdout");
+        if message["id"] == 2 {
+            break message;
+        }
+    };
+
+    let result = &tools_list["result"];
+    assert!(result["ttlMs"].is_u64(), "ttlMs is required: {tools_list}");
+    assert!(
+        matches!(result["cacheScope"].as_str(), Some("public" | "private")),
+        "cacheScope is required: {tools_list}"
+    );
+    assert_eq!(result["tools"].as_array().map(Vec::len), Some(4));
+}
+
 #[tokio::test]
 async fn the_schema_reaches_the_client_with_refs_and_parameters_intact() {
     let api = MockServer::start().await;

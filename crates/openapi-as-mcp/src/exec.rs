@@ -280,7 +280,11 @@ fn expand(value: &Value) -> Vec<String> {
 /// Runs `token_command` in a shell and returns its trimmed stdout as the bearer token. Run again
 /// for every request, so a token that expires or comes from a secret manager never goes stale.
 async fn run_token_command(command: &str) -> Result<String, CallError> {
-    let (shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
+    let (shell, flag) = if cfg!(windows) {
+        ("cmd", "/C")
+    } else {
+        ("sh", "-c")
+    };
     let auth_err = |reason: String| CallError::Auth {
         command: command.to_string(),
         reason,
@@ -543,8 +547,8 @@ mod tests {
         let api = api();
         let mut config = api_config();
         config.token_command = Some("exit 1".to_string());
-        let executor = Executor::new(&config, "http://127.0.0.1:1".to_string())
-            .expect("client builds");
+        let executor =
+            Executor::new(&config, "http://127.0.0.1:1".to_string()).expect("client builds");
 
         let err = executor
             .call(&operation(&api, "getRecipe"), &args(json!({"id": "x"})))
