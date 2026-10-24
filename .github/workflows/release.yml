@@ -14,8 +14,10 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Names the archive and supplies the version (all crates share the workspace version).
-  BIN_NAME: openapi-as-mcp
+  # Names the release archives.
+  ARCHIVE_NAME: openapi-tools
+  # The crate the version is read from; every crate shares the workspace version, so any would do.
+  VERSION_CRATE: openapi-as-mcp
   # Every binary shipped in the archive.
   BINARIES: openapi-as-mcp openapi-cli
 
@@ -71,9 +73,9 @@ jobs:
         run: |
           set -euo pipefail
           version=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r --arg name "$BIN_NAME" '.packages[] | select(.name == $name) | .version')
+            | jq -r --arg name "$VERSION_CRATE" '.packages[] | select(.name == $name) | .version')
           if [[ -z "$version" ]]; then
-            echo "could not read the version of $BIN_NAME from Cargo.toml" >&2
+            echo "could not read the version of $VERSION_CRATE from Cargo.toml" >&2
             exit 1
           fi
           # On a tag build, refuse to publish a mismatch: a tag of v0.2.0 built from a manifest
@@ -99,7 +101,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
-          stem="${BIN_NAME}-${version}-${{ matrix.target }}"
+          stem="${ARCHIVE_NAME}-${version}-${{ matrix.target }}"
           mkdir -p "dist/${stem}"
           cp README.md "dist/${stem}/"
           ext=""

@@ -1,4 +1,4 @@
-# openapi-as-mcp
+# openapi-tools
 
 Cargo workspace holding the tools for working with openapi described apis. Each tool is its own
 crate under [crates/](crates/), with shared dependency versions pinned once in the root
