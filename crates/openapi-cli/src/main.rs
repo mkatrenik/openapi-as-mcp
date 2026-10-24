@@ -97,7 +97,15 @@ async fn main() -> anyhow::Result<ExitCode> {
 
 /// Runs one command and prints its result.
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
-    let config = cli.config.resolve().context("invalid configuration")?;
+    // No default ceiling on response size here, unlike under MCP: the output goes to a person or a
+    // pipe, not into a model's context. An explicit --max-response-bytes or config value still
+    // applies.
+    let config = ConfigArgs {
+        no_default_response_limit: true,
+        ..cli.config
+    }
+    .resolve()
+    .context("invalid configuration")?;
     let apis = spec::load_all(&config.specs(), config.timeout).await?;
     let tools = ToolSet::new(&config, apis)?;
     let compact = cli.output.compact;

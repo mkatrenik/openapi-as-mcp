@@ -118,6 +118,13 @@ pub struct ConfigArgs {
     /// Ceiling on the response bytes one tool call may return.
     #[arg(long, value_name = "N", global = true)]
     pub max_response_bytes: Option<usize>,
+
+    /// Not a flag: set by a front end before `resolve` to drop the default response ceiling, so
+    /// an API with no `max_response_bytes` (flag or file) returns its whole body. The default
+    /// exists to protect a model's context window; a person at a shell piping into jq wants the
+    /// full response.
+    #[arg(skip)]
+    pub no_default_response_limit: bool,
 }
 
 /// One document and everything about how to call it.
@@ -133,7 +140,8 @@ pub struct ApiConfig {
     pub exclude: Vec<regex::Regex>,
     pub tool_prefix: Option<String>,
     pub timeout: Duration,
-    pub max_response_bytes: usize,
+    /// `None` means no ceiling: the whole body is returned.
+    pub max_response_bytes: Option<usize>,
     /// When set, run this shell command before every request and send its trimmed stdout as
     /// `Authorization: Bearer <output>`, replacing any static token/`Authorization` header.
     pub token_command: Option<String>,
@@ -674,7 +682,7 @@ impl ConfigArgs {
                 .or(entry.max_response_bytes)
                 .or(group.max_response_bytes)
                 .or(defaults.max_response_bytes)
-                .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES),
+                .or((!self.no_default_response_limit).then_some(DEFAULT_MAX_RESPONSE_BYTES)),
             token_command,
         })
     }
@@ -835,6 +843,26 @@ mod tests {
 
     fn only(args: ConfigArgs) -> ApiConfig {
         args.resolve().expect("resolves").apis.remove(0)
+    }
+
+    #[test]
+    fn the_default_response_ceiling_can_be_dropped_but_an_explicit_one_still_applies() {
+        assert_eq!(
+            only(args()).max_response_bytes,
+            Some(DEFAULT_MAX_RESPONSE_BYTES)
+        );
+
+        let unlimited = ConfigArgs {
+            no_default_response_limit: true,
+            ..args()
+        };
+        assert_eq!(only(unlimited.clone()).max_response_bytes, None);
+
+        let explicit = ConfigArgs {
+            max_response_bytes: Some(100),
+            ..unlimited
+        };
+        assert_eq!(only(explicit).max_response_bytes, Some(100));
     }
 
     #[test]

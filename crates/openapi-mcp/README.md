@@ -141,7 +141,7 @@ _tool-level_ error carrying the upstream message, so the model can read it and t
 | `--include` / `--exclude` | regexes, matched against the tool name, the method and the path independently       |
 | `--tool-prefix`           | keeps two of these apart in one client                                              |
 | `--timeout`               | per-request, in seconds (default 60)                                                |
-| `--max-response-bytes`    | ceiling on one response (default 256 KiB)                                           |
+| `--max-response-bytes`    | ceiling on one response (default 256 KiB; `openapi-cli` has no default)             |
 | `--log`                   | log filter; diagnostics always go to stderr                                         |
 | `--daemon`                | `serve` only: share one server process between sessions — see above                 |
 | `--idle-timeout`          | with `--daemon`: seconds without sessions before the shared server exits (300)      |

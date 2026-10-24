@@ -37,7 +37,7 @@ pub struct Executor {
     base_url: String,
     headers: Vec<(String, String)>,
     token_command: Option<String>,
-    max_response_bytes: usize,
+    max_response_bytes: Option<usize>,
 }
 
 impl Executor {
@@ -158,7 +158,10 @@ impl Executor {
                 url: url.clone(),
                 source,
             })?;
-        let (body, truncated) = truncate(&raw, self.max_response_bytes);
+        let (body, truncated) = match self.max_response_bytes {
+            Some(max) => truncate(&raw, max),
+            None => (raw, false),
+        };
 
         if !status.is_success() {
             return Err(CallError::Upstream {
@@ -508,7 +511,7 @@ mod tests {
             .await;
 
         let mut api_config = api_config();
-        api_config.max_response_bytes = 100;
+        api_config.max_response_bytes = Some(100);
         let executor = Executor::new(&api_config, server.uri()).expect("client builds");
 
         let api = api();
