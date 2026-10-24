@@ -88,10 +88,10 @@ impl Paths {
 /// the system temp dir. Kept short on purpose: a Unix socket path is limited to ~104 bytes.
 fn runtime_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
-        return PathBuf::from(dir).join("openapi-as-mcp");
+        return PathBuf::from(dir).join("openapi-mcp");
     }
     let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
-    std::env::temp_dir().join(format!("openapi-as-mcp-{user}"))
+    std::env::temp_dir().join(format!("openapi-mcp-{user}"))
 }
 
 /// Runs the relay: connects to (or starts) the host for `config`, then copies stdin to the socket

@@ -521,7 +521,7 @@ impl ConfigArgs {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("could not read {}", path.display()))?;
         let mut settings: Settings = toml::from_str(&text)
-            .with_context(|| format!("{} is not a valid openapi-as-mcp config", path.display()))?;
+            .with_context(|| format!("{} is not a valid openapi-tools config", path.display()))?;
         settings
             .expand_env()
             .with_context(|| format!("in {}", path.display()))?;
@@ -806,7 +806,7 @@ pub mod test_support {
     pub fn try_config_from_args(toml: &str, args: ConfigArgs) -> anyhow::Result<Config> {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
-            "openapi-as-mcp-{}-{}.toml",
+            "openapi-mcp-{}-{}.toml",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ));

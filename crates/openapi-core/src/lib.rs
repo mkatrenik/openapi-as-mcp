@@ -1,4 +1,4 @@
-//! The engine behind `openapi-as-mcp` and `openapi-cli`: turn OpenAPI 3.x documents into a set
+//! The engine behind `openapi-mcp` and `openapi-cli`: turn OpenAPI 3.x documents into a set
 //! of callable tools.
 //!
 //! Point it at a spec and a base URL and every operation becomes a tool, named after its
@@ -9,7 +9,7 @@
 //! see [`config`] for the TOML file that describes them. [`toolset::ToolSet`] is the entry point
 //! both front ends build on.
 //!
-//! Nothing in this crate writes to stdout: under `openapi-as-mcp serve` stdout is the JSON-RPC
+//! Nothing in this crate writes to stdout: under `openapi-mcp serve` stdout is the JSON-RPC
 //! stream. Diagnostics go through `tracing`, and the binary decides where they land.
 
 pub mod config;

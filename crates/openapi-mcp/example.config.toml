@@ -1,4 +1,4 @@
-# openapi-as-mcp config file.
+# openapi-tools config file (read by openapi-mcp and openapi-cli).
 #
 # Copy to ./openapi-as-mcp.toml or ~/.config/openapi-as-mcp/config.toml — both are picked up
 # automatically — or point at it with `--config <path>`.

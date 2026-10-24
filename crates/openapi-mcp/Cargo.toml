@@ -1,5 +1,5 @@
 [package]
-name = "openapi-as-mcp"
+name = "openapi-mcp"
 version.workspace = true
 edition.workspace = true
 description = "Serve any OpenAPI 3.x document as an MCP tool set"

@@ -1,6 +1,6 @@
 //! The tool set: one tool per OpenAPI operation, across every configured document.
 //!
-//! This is the part both front ends share — `openapi-as-mcp` serves it over MCP, `openapi-cli`
+//! This is the part both front ends share — `openapi-mcp` serves it over MCP, `openapi-cli`
 //! drives it from a shell — so naming, filtering and the request path cannot drift between them.
 //! It deliberately knows nothing about MCP: a front end turns [`ToolSet::operations`] into
 //! whatever its protocol calls a tool.

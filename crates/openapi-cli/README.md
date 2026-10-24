@@ -1,7 +1,7 @@
 # openapi-cli
 
 List, inspect and call the operations of any OpenAPI 3.x document from a shell. It builds the same
-tool set `openapi-as-mcp` serves (both sit on `openapi-core`), takes the same flags and reads the
+tool set `openapi-mcp` serves (both sit on `openapi-core`), takes the same flags and reads the
 same config file, so it is how a spec gets checked before an agent is pointed at it.
 
 ```bash
@@ -18,4 +18,4 @@ objects; `--json '{...}'` passes the whole argument object at once. A failed cal
 message to stderr and exits non-zero. `--compact` prints single-line JSON for `jq`.
 
 Configuration — `--config`, `./openapi-as-mcp.toml`, `~/.config/openapi-as-mcp/config.toml`, `--api`,
-`--group` — is documented in the [openapi-as-mcp README](../openapi-as-mcp/README.md).
+`--group` — is documented in the [openapi-mcp README](../openapi-mcp/README.md).

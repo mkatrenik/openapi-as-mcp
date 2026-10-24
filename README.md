@@ -8,7 +8,7 @@ crate under [crates/](crates/), with shared dependency versions pinned once in t
 
 | Crate                                           | Binary           | What it does                                                                                                                                                                   |
 | ----------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [crates/openapi-as-mcp](crates/openapi-as-mcp/) | `openapi-as-mcp` | Serves any number of OpenAPI 3.x documents as one MCP tool set, one tool per operation, configured by flags or a TOML file — see its [README](crates/openapi-as-mcp/README.md) |
+| [crates/openapi-mcp](crates/openapi-mcp/) | `openapi-mcp` | Serves any number of OpenAPI 3.x documents as one MCP tool set, one tool per operation, configured by flags or a TOML file — see its [README](crates/openapi-mcp/README.md) |
 | [crates/openapi-cli](crates/openapi-cli/)       | `openapi-cli`    | Lists, inspects and calls the same tools from a shell, with the same flags and config file — see its [README](crates/openapi-cli/README.md)                                    |
 | [crates/openapi-core](crates/openapi-core/)     | (library)        | What both binaries share: config, spec loading, schema building, the HTTP request path and the tool set itself                                                                 |
 
@@ -17,8 +17,8 @@ crate under [crates/](crates/), with shared dependency versions pinned once in t
 ```bash
 cargo build --workspace
 cargo test --workspace
-cargo run -p openapi-as-mcp -- --help   # run one tool
-cargo test -p openapi-as-mcp            # test one tool
+cargo run -p openapi-mcp -- --help   # run one tool
+cargo test -p openapi-mcp            # test one tool
 ```
 
 Commands that a tool documents relative to its own directory (for example

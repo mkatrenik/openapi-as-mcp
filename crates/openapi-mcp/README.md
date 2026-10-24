@@ -1,4 +1,4 @@
-# openapi-as-mcp
+# openapi-mcp
 
 Turn any OpenAPI 3.x document into an MCP tool set. Point it at a spec and a base URL; every
 operation in the document becomes a tool, named after its `operationId`, with a JSON Schema built
@@ -12,11 +12,11 @@ write a real server instead.
 ## Install
 
 ```bash
-cargo install --path crates/openapi-as-mcp
+cargo install --path crates/openapi-mcp
 cargo install --path crates/openapi-cli
 ```
 
-Installs the `openapi-as-mcp` (MCP server) and `openapi-cli` (shell) binaries to `~/.cargo/bin`
+Installs the `openapi-mcp` (MCP server) and `openapi-cli` (shell) binaries to `~/.cargo/bin`
 (make sure it's on `PATH`). Run from the workspace root, or point `--path` at the crate directory
 from wherever you are. Both are built on `openapi-core`, take the same flags and read the same
 config file, so `openapi-cli` shows exactly the tools the server serves.
@@ -24,7 +24,7 @@ config file, so `openapi-cli` shows exactly the tools the server serves.
 Or straight from GitHub, without cloning first:
 
 ```bash
-cargo install --git https://github.com/mkatrenik/openapi-tools openapi-as-mcp openapi-cli
+cargo install --git https://github.com/mkatrenik/openapi-tools openapi-mcp openapi-cli
 ```
 
 The package names after the URL are required since the repo is a workspace with more than one crate.
@@ -57,7 +57,7 @@ argument object at once.
 {
   "mcpServers": {
     "recipes": {
-      "command": "openapi-as-mcp",
+      "command": "openapi-mcp",
       "args": [
         "serve",
         "--spec",
@@ -94,8 +94,8 @@ end up with a single server.
 The server exits after `--idle-timeout` seconds with no sessions (default 300; `0` keeps it
 running), which is also how it picks up a changed document: the next session after that starts a
 fresh one. It keeps the environment of the session that started it, which matters for `${VAR}`
-and `token_command`. Its socket, lock and log live in `$XDG_RUNTIME_DIR/openapi-as-mcp/`, or
-`$TMPDIR/openapi-as-mcp-$USER/` when that is unset; a server that fails to start reports the end of
+and `token_command`. Its socket, lock and log live in `$XDG_RUNTIME_DIR/openapi-mcp/`, or
+`$TMPDIR/openapi-mcp-$USER/` when that is unset; a server that fails to start reports the end of
 its log through the relay. Unix only.
 
 ## What the mapping looks like
@@ -203,7 +203,7 @@ never instead of them, and `--api recipes` narrows the run to the entries you na
 
 ```bash
 openapi-cli list --api recipes             # one document out of the file
-openapi-as-mcp serve --api recipes --api billing
+openapi-mcp serve --api recipes --api billing
 ```
 
 ### Groups
@@ -238,8 +238,8 @@ base_url = "https://recipes.stg.internal"
 ```
 
 ```bash
-openapi-as-mcp serve --group prod        # one environment
-openapi-as-mcp serve                     # every group, plus any ungrouped [[api]]
+openapi-mcp serve --group prod        # one environment
+openapi-mcp serve                     # every group, plus any ungrouped [[api]]
 ```
 
 A grouped entry is named `prod/recipes` in logs and errors, so one name may be reused in every
@@ -257,7 +257,7 @@ An MCP client entry can then be one line of arguments:
 {
   "mcpServers": {
     "apis": {
-      "command": "openapi-as-mcp",
+      "command": "openapi-mcp",
       "args": ["serve", "--config", "/path/to/openapi-as-mcp.toml"],
       "env": { "RECIPES_TOKEN": "…", "BILLING_KEY": "…" }
     }

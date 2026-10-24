@@ -1,4 +1,4 @@
-//! `openapi-as-mcp` — serve any OpenAPI 3.x document as an MCP tool set.
+//! `openapi-mcp` — serve any OpenAPI 3.x document as an MCP tool set.
 //!
 //! The document-to-tools work lives in `openapi-core`; this binary is only the MCP front end over
 //! it. To inspect or call the same tools from a shell, use `openapi-cli`.
@@ -30,7 +30,7 @@ use crate::server::OpenApiMcp;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "openapi-as-mcp",
+    name = "openapi-mcp",
     version,
     about = "Serve any OpenAPI 3.x document as an MCP tool set",
     long_about = "Serve any OpenAPI 3.x document as an MCP tool set.\n\n`serve` runs the MCP \
@@ -118,7 +118,7 @@ async fn main() -> anyhow::Result<ExitCode> {
         documents = config.apis.len(),
         base_urls = ?server.base_urls(),
         tools = server.tools().len(),
-        "starting openapi-as-mcp"
+        "starting openapi-mcp"
     );
 
     let service = server

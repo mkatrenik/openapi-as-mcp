@@ -17,9 +17,9 @@ env:
   # Names the release archives.
   ARCHIVE_NAME: openapi-tools
   # The crate the version is read from; every crate shares the workspace version, so any would do.
-  VERSION_CRATE: openapi-as-mcp
+  VERSION_CRATE: openapi-mcp
   # Every binary shipped in the archive.
-  BINARIES: openapi-as-mcp openapi-cli
+  BINARIES: openapi-mcp openapi-cli
 
 jobs:
   build:

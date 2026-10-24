@@ -155,7 +155,7 @@ pub async fn load_all(
 ) -> anyhow::Result<Vec<Api>> {
     let client = reqwest::Client::builder()
         .timeout(timeout)
-        .user_agent(concat!("openapi-as-mcp/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("openapi-tools/", env!("CARGO_PKG_VERSION")))
         .build()?;
 
     let mut apis = Vec::with_capacity(sources.len());

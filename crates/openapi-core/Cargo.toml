@@ -2,7 +2,7 @@
 name = "openapi-core"
 version.workspace = true
 edition.workspace = true
-description = "OpenAPI 3.x documents as a callable tool set, shared by openapi-as-mcp and openapi-cli"
+description = "OpenAPI 3.x documents as a callable tool set, shared by openapi-mcp and openapi-cli"
 
 [dependencies]
 clap = { workspace = true }

@@ -3,7 +3,7 @@
 //! `list`, `schema` and `call` exist so a spec can be checked before an agent is pointed at it —
 //! "which tools does this produce, what does one take, does it actually work" is three commands
 //! rather than an MCP client session. The tools are built by `openapi-core`, the same crate behind
-//! `openapi-as-mcp`, so what this prints is exactly what the MCP server serves and `call` goes
+//! `openapi-mcp`, so what this prints is exactly what the MCP server serves and `call` goes
 //! through the same request path.
 //!
 //! Unlike the MCP server, this binary owns stdout: the result is the output.
