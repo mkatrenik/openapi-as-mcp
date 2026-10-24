@@ -28,15 +28,15 @@ const DEFAULT_TIMEOUT_SECONDS: u64 = 60;
 /// Looked at, in order, when `--config` is not given. A missing file here is not an error: the
 /// flags alone are still a complete configuration.
 const DISCOVERED_CONFIG_PATHS: [&str; 2] = [
-    "openapi-as-mcp.toml",
-    ".config/openapi-as-mcp/config.toml", // relative to $HOME
+    "openapi-tools.toml",
+    ".config/openapi-tools/config.toml", // relative to $HOME
 ];
 
 #[derive(Debug, Clone, Default, Args)]
 #[command(next_help_heading = "Configuration")]
 pub struct ConfigArgs {
-    /// TOML config file. Defaults to ./openapi-as-mcp.toml, then
-    /// ~/.config/openapi-as-mcp/config.toml.
+    /// TOML config file. Defaults to ./openapi-tools.toml, then
+    /// ~/.config/openapi-tools/config.toml.
     #[arg(long = "config", short = 'c', value_name = "PATH", global = true)]
     /// A `String` rather than a `PathBuf` because clap's path parser rejects an empty value, and
     /// `--config ""` is the explicit "no file, and do not go looking".
@@ -1151,7 +1151,7 @@ mod tests {
     #[test]
     fn an_explicit_config_that_does_not_exist_is_an_error() {
         let err = ConfigArgs {
-            config: Some("/nonexistent/openapi-as-mcp.toml".into()),
+            config: Some("/nonexistent/openapi-tools.toml".into()),
             specs: vec!["a.json".into()],
             ..ConfigArgs::default()
         }

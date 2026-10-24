@@ -17,5 +17,5 @@ parses (`page=2` is a number, `name=pep` is the string), so quoting is only need
 objects; `--json '{...}'` passes the whole argument object at once. A failed call prints its
 message to stderr and exits non-zero. `--compact` prints single-line JSON for `jq`.
 
-Configuration — `--config`, `./openapi-as-mcp.toml`, `~/.config/openapi-as-mcp/config.toml`, `--api`,
+Configuration — `--config`, `./openapi-tools.toml`, `~/.config/openapi-tools/config.toml`, `--api`,
 `--group` — is documented in the [openapi-mcp README](../openapi-mcp/README.md).

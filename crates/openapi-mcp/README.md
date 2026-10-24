@@ -81,7 +81,7 @@ A client starts one server per session, so five agent sessions mean five process
 the same documents. Add `--daemon` to share one instead:
 
 ```json
-"args": ["serve", "--daemon", "--config", "/path/to/openapi-as-mcp.toml"]
+"args": ["serve", "--daemon", "--config", "/path/to/openapi-tools.toml"]
 ```
 
 The launched process becomes a thin relay between its stdio and a Unix socket. Behind the socket
@@ -156,8 +156,8 @@ a collision becomes `listRecipes_2` rather than a lost tool. Flags apply to all 
 fine when the documents share a host and a token.
 
 When they do not, describe them in a config file instead: each `[[api]]` gets its own base URL,
-credentials, filters and prefix. `--config <path>`, or `./openapi-as-mcp.toml` and
-`~/.config/openapi-as-mcp/config.toml`, which are picked up automatically.
+credentials, filters and prefix. `--config <path>`, or `./openapi-tools.toml` and
+`~/.config/openapi-tools/config.toml`, which are picked up automatically.
 
 ```toml
 # Defaults for every api below.
@@ -258,7 +258,7 @@ An MCP client entry can then be one line of arguments:
   "mcpServers": {
     "apis": {
       "command": "openapi-mcp",
-      "args": ["serve", "--config", "/path/to/openapi-as-mcp.toml"],
+      "args": ["serve", "--config", "/path/to/openapi-tools.toml"],
       "env": { "RECIPES_TOKEN": "…", "BILLING_KEY": "…" }
     }
   }
