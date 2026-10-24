@@ -887,9 +887,36 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
+ "openapi-core",
+ "rmcp",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wiremock",
+]
+
+[[package]]
+name = "openapi-cli"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "openapi-core",
+ "serde_json",
+ "tokio",
+ "tracing-subscriber",
+ "wiremock",
+]
+
+[[package]]
+name = "openapi-core"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
  "regex",
  "reqwest",
- "rmcp",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -897,7 +924,6 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
- "tracing-subscriber",
  "urlencoding",
  "wiremock",
 ]

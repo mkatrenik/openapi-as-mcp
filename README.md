@@ -1,7 +1,7 @@
 # openapi-as-mcp
 
 Cargo workspace holding the tools for working with openapi described apis. Each tool is its own
-binary crate under [crates/](crates/), with shared dependency versions pinned once in the root
+crate under [crates/](crates/), with shared dependency versions pinned once in the root
 [Cargo.toml](Cargo.toml) (`[workspace.dependencies]`).
 
 ## Tools
@@ -9,6 +9,8 @@ binary crate under [crates/](crates/), with shared dependency versions pinned on
 | Crate                                           | Binary           | What it does                                                                                                                                                                   |
 | ----------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [crates/openapi-as-mcp](crates/openapi-as-mcp/) | `openapi-as-mcp` | Serves any number of OpenAPI 3.x documents as one MCP tool set, one tool per operation, configured by flags or a TOML file — see its [README](crates/openapi-as-mcp/README.md) |
+| [crates/openapi-cli](crates/openapi-cli/)       | `openapi-cli`    | Lists, inspects and calls the same tools from a shell, with the same flags and config file — see its [README](crates/openapi-cli/README.md)                                    |
+| [crates/openapi-core](crates/openapi-core/)     | (library)        | What both binaries share: config, spec loading, schema building, the HTTP request path and the tool set itself                                                                 |
 
 ## Working in the workspace
 

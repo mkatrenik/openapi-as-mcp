@@ -1,73 +1,59 @@
-//! CLI surface over the same tool set the MCP server exposes.
+//! `openapi-cli` — list, inspect and call the operations of any OpenAPI 3.x document from a shell.
 //!
-//! `list`, `schema` and `call` exist so a spec can be checked from a shell before an agent is
-//! pointed at it — "which tools does this produce, what does one take, does it actually work" is
-//! three commands rather than an MCP client session. `call` goes through
-//! [`OpenApiMcp::call`](crate::server::OpenApiMcp::call), so there is no second request path.
+//! `list`, `schema` and `call` exist so a spec can be checked before an agent is pointed at it —
+//! "which tools does this produce, what does one take, does it actually work" is three commands
+//! rather than an MCP client session. The tools are built by `openapi-core`, the same crate behind
+//! `openapi-as-mcp`, so what this prints is exactly what the MCP server serves and `call` goes
+//! through the same request path.
 //!
-//! Unlike the rest of `src/`, this module owns stdout: in CLI mode there is no JSON-RPC stream to
-//! corrupt. `tests/no_stdout.rs` exempts this file for that reason.
+//! Unlike the MCP server, this binary owns stdout: the result is the output.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
-use serde_json::{Map, Value, json};
-
-use crate::config::ConfigArgs;
-use crate::server::{OpenApiMcp, describe_tools};
-use crate::spec;
+use openapi_core::config::ConfigArgs;
+use openapi_core::spec;
+use openapi_core::toolset::ToolSet;
+use serde_json::{Map, Value};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "openapi-as-mcp",
+    name = "openapi-cli",
     version,
-    about = "Serve any OpenAPI 3.x document as an MCP tool set",
-    long_about = "Serve any OpenAPI 3.x document as an MCP tool set.\n\n`serve` runs the MCP \
-                  server on stdio; the other subcommands inspect and exercise the same tools \
-                  from a shell.",
+    about = "List, inspect and call the operations of any OpenAPI 3.x document",
     // A bare invocation prints help rather than a one-line error: it is what someone who just
     // installed this types first.
     arg_required_else_help = true
 )]
-pub struct Cli {
+struct Cli {
     #[command(flatten)]
-    pub config: ConfigArgs,
+    config: ConfigArgs,
 
     #[command(flatten)]
-    pub output: OutputArgs,
+    output: OutputArgs,
 
     #[command(subcommand)]
-    pub command: Command,
-}
-
-impl Cli {
-    /// Whether this invocation is the stdio MCP server rather than a one-shot command.
-    pub fn is_serve(&self) -> bool {
-        matches!(self.command, Command::Serve(_))
-    }
+    command: Command,
 }
 
 #[derive(Debug, Default, Args)]
 #[command(next_help_heading = "Output")]
-pub struct OutputArgs {
+struct OutputArgs {
     /// Print single-line JSON instead of indented, for piping into jq.
     #[arg(long, global = true)]
     compact: bool,
 
-    /// Log filter, in `tracing` directive form (`info`, `openapi_as_mcp=debug`). Diagnostics
-    /// always go to stderr. Defaults to `info` under `serve` and `error` otherwise.
-    #[arg(long, value_name = "FILTER", global = true)]
-    pub log: Option<String>,
+    /// Log filter, in `tracing` directive form (`info`, `openapi_core=debug`). Diagnostics
+    /// always go to stderr.
+    #[arg(long, value_name = "FILTER", default_value = "error", global = true)]
+    log: String,
 }
 
 #[derive(Debug, Subcommand)]
-pub enum Command {
-    /// Run the MCP server on stdio. This is how an MCP client launches the binary.
-    Serve(ServeArgs),
-
-    /// List the tools the document produces, one line of JSON each.
+enum Command {
+    /// List the tools the document produces, one entry per tool.
     List,
 
     /// Print one tool's input schema.
@@ -92,42 +78,35 @@ pub enum Command {
     },
 }
 
-#[derive(Debug, Default, Args)]
-pub struct ServeArgs {
-    /// Share one server process between every session with the same configuration: this process
-    /// relays stdio to it, starting it first when it is not running.
-    #[arg(long)]
-    pub daemon: bool,
+#[tokio::main]
+async fn main() -> anyhow::Result<ExitCode> {
+    let cli = Cli::parse();
 
-    /// With --daemon: seconds the shared server stays up with no sessions before exiting. 0 keeps
-    /// it running until killed.
-    #[arg(
-        long,
-        value_name = "SECONDS",
-        default_value_t = 300,
-        requires = "daemon"
-    )]
-    pub idle_timeout: u64,
+    // The default is quiet: the result is the output, and a failed call already prints its
+    // message to stderr — logging it too would just print everything twice.
+    let filter = tracing_subscriber::EnvFilter::try_new(&cli.output.log)
+        .context("--log is not a valid tracing filter")?;
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
+        .with_env_filter(filter)
+        .init();
 
-    /// Internal: run as the shared server itself. Added by the relay when it starts one.
-    #[arg(long = "daemon-host", hide = true, requires = "daemon")]
-    pub daemon_host: bool,
+    run(cli).await
 }
 
-/// Runs one command and prints its result. `Serve` never reaches here — `main` handles it.
-pub async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
+/// Runs one command and prints its result.
+async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let config = cli.config.resolve().context("invalid configuration")?;
     let apis = spec::load_all(&config.specs(), config.timeout).await?;
-    let server = OpenApiMcp::new(&config, apis)?;
+    let tools = ToolSet::new(&config, apis)?;
     let compact = cli.output.compact;
 
     match cli.command {
-        Command::Serve(_) => unreachable!("serve is dispatched by main"),
-
-        Command::List => emit(&describe_tools(&server), compact),
+        Command::List => emit(&tools.describe(), compact),
 
         Command::Schema { tool } => {
-            let operation = server
+            let operation = tools
                 .operation(&tool)
                 .with_context(|| format!("no tool named {tool:?}; try `list`"))?;
             emit(&Value::Object(operation.input_schema.clone()), compact)
@@ -135,24 +114,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
         Command::Call { tool, args, json } => {
             let arguments = arguments(&args, json.as_deref())?;
-            let result = server.call(&tool, arguments).await;
-
-            // A failed call is the *expected* failure mode here (a stale token, a 404), so it goes
-            // to stderr as plain text with a non-zero exit rather than as JSON on stdout.
-            if result.is_error == Some(true) {
-                let text: Vec<&str> = result
-                    .content
-                    .iter()
-                    .filter_map(|block| block.as_text())
-                    .map(|block| block.text.as_str())
-                    .collect();
-                eprintln!("{}", text.join("\n"));
-                return Ok(ExitCode::FAILURE);
-            }
-
-            match &result.structured_content {
-                Some(payload) => emit(payload, compact),
-                None => emit(&json!({"result": "ok"}), compact),
+            match tools.call(&tool, arguments).await {
+                Ok(payload) => emit(&payload, compact),
+                // A failed call is the *expected* failure mode here (a stale token, a 404), so it
+                // goes to stderr as plain text with a non-zero exit rather than as JSON on stdout.
+                Err(message) => {
+                    eprintln!("{message}");
+                    Ok(ExitCode::FAILURE)
+                }
             }
         }
     }
@@ -200,6 +169,7 @@ fn emit(payload: &Value, compact: bool) -> anyhow::Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn arg_values_are_json_when_they_parse_and_strings_otherwise() {

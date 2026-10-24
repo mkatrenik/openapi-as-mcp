@@ -1,4 +1,4 @@
-//! The CLI half of the binary, driven as a subprocess.
+//! `openapi-cli`, driven as a subprocess.
 //!
 //! `list`, `schema` and `call` are how a spec gets checked before an agent is pointed at it, so
 //! they are worth testing the same way a person uses them: run the binary, read stdout.
@@ -12,13 +12,13 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn spec() -> String {
     format!(
-        "{}/tests/fixtures/recipes.openapi.yaml",
+        "{}/../openapi-core/tests/fixtures/recipes.openapi.yaml",
         env!("CARGO_MANIFEST_DIR")
     )
 }
 
 async fn run(base_url: &str, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_openapi-as-mcp"))
+    Command::new(env!("CARGO_BIN_EXE_openapi-cli"))
         .args(args)
         .arg("--spec")
         .arg(spec())
@@ -35,7 +35,7 @@ async fn run(base_url: &str, args: &[&str]) -> Output {
 
 /// Runs the binary against a written config file, with no `--spec` of its own.
 async fn run_with_config(config: &std::path::Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_openapi-as-mcp"))
+    Command::new(env!("CARGO_BIN_EXE_openapi-cli"))
         .args(args)
         .arg("--config")
         .arg(config)
@@ -152,15 +152,18 @@ async fn a_failed_call_exits_non_zero_and_writes_to_stderr() {
 }
 
 #[tokio::test]
-async fn a_bare_invocation_prints_help_rather_than_starting_the_server() {
-    let output = Command::new(env!("CARGO_BIN_EXE_openapi-as-mcp"))
+async fn a_bare_invocation_prints_help() {
+    let output = Command::new(env!("CARGO_BIN_EXE_openapi-cli"))
         .output()
         .await
         .expect("binary runs");
 
     assert!(!output.status.success());
     let help = String::from_utf8_lossy(&output.stderr);
-    assert!(help.contains("serve"), "help must mention serve: {help}");
+    assert!(
+        help.contains("call"),
+        "help must list the subcommands: {help}"
+    );
 }
 
 #[tokio::test]

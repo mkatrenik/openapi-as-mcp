@@ -30,14 +30,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
+use openapi_core::config::Config;
+use openapi_core::spec;
 use rmcp::ServiceExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
-use crate::config::Config;
 use crate::server::OpenApiMcp;
-use crate::spec;
 
 /// The hidden `serve` flag that turns a re-executed relay into the host. It is appended to the
 /// relay's own argv, so the host resolves exactly the configuration the relay did.

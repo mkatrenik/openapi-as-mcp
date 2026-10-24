@@ -14,7 +14,10 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Names the archive and supplies the version (all crates share the workspace version).
   BIN_NAME: openapi-as-mcp
+  # Every binary shipped in the archive.
+  BINARIES: openapi-as-mcp openapi-cli
 
 jobs:
   build:
@@ -99,12 +102,15 @@ jobs:
           stem="${BIN_NAME}-${version}-${{ matrix.target }}"
           mkdir -p "dist/${stem}"
           cp README.md "dist/${stem}/"
+          ext=""
+          if [[ "${{ matrix.target }}" == *windows* ]]; then ext=".exe"; fi
+          for binary in $BINARIES; do
+            cp "target/${{ matrix.target }}/release/${binary}${ext}" "dist/${stem}/"
+          done
           if [[ "${{ matrix.target }}" == *windows* ]]; then
-            cp "target/${{ matrix.target }}/release/${BIN_NAME}.exe" "dist/${stem}/"
             (cd dist && 7z a -tzip "${stem}.zip" "${stem}" >/dev/null)
             echo "asset=dist/${stem}.zip" >> "$GITHUB_OUTPUT"
           else
-            cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${stem}/"
             (cd dist && tar czf "${stem}.tar.gz" "${stem}")
             echo "asset=dist/${stem}.tar.gz" >> "$GITHUB_OUTPUT"
           fi

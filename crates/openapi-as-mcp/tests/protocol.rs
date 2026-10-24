@@ -13,7 +13,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn spec() -> String {
     format!(
-        "{}/tests/fixtures/recipes.openapi.yaml",
+        "{}/../openapi-core/tests/fixtures/recipes.openapi.yaml",
         env!("CARGO_MANIFEST_DIR")
     )
 }
@@ -363,4 +363,16 @@ async fn daemon_mode_serves_concurrent_sessions_from_one_host_that_exits_when_id
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn a_bare_invocation_prints_help_rather_than_starting_the_server() {
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_openapi-as-mcp"))
+        .output()
+        .await
+        .expect("binary runs");
+
+    assert!(!output.status.success());
+    let help = String::from_utf8_lossy(&output.stderr);
+    assert!(help.contains("serve"), "help must mention serve: {help}");
 }

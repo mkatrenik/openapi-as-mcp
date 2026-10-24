@@ -13,23 +13,26 @@ write a real server instead.
 
 ```bash
 cargo install --path crates/openapi-as-mcp
+cargo install --path crates/openapi-cli
 ```
 
-Installs the `openapi-as-mcp` binary to `~/.cargo/bin` (make sure it's on `PATH`). Run from the
-workspace root, or point `--path` at the crate directory from wherever you are.
+Installs the `openapi-as-mcp` (MCP server) and `openapi-cli` (shell) binaries to `~/.cargo/bin`
+(make sure it's on `PATH`). Run from the workspace root, or point `--path` at the crate directory
+from wherever you are. Both are built on `openapi-core`, take the same flags and read the same
+config file, so `openapi-cli` shows exactly the tools the server serves.
 
 Or straight from GitHub, without cloning first:
 
 ```bash
-cargo install --git https://github.com/mkatrenik/openapi-as-mcp openapi-as-mcp
+cargo install --git https://github.com/mkatrenik/openapi-as-mcp openapi-as-mcp openapi-cli
 ```
 
-The package name after the URL is required since the repo is a workspace with more than one crate.
+The package names after the URL are required since the repo is a workspace with more than one crate.
 
 ## Quick start
 
 ```bash
-cargo run -p openapi-as-mcp -- list \
+cargo run -p openapi-cli -- list \
   --spec https://api.example.com/openapi.json \
   --base-url https://api.example.com
 ```
@@ -37,8 +40,8 @@ cargo run -p openapi-as-mcp -- list \
 `list` prints one line of JSON per tool. Then look at one, and call it:
 
 ```bash
-openapi-as-mcp schema listRecipes --spec ./openapi.yaml
-openapi-as-mcp call listRecipes -a page=2 -a 'state=["failed"]' --spec ./openapi.yaml
+openapi-cli schema listRecipes --spec ./openapi.yaml
+openapi-cli call listRecipes -a page=2 -a 'state=["failed"]' --spec ./openapi.yaml
 ```
 
 `-a name=value` parses the value as JSON when it parses (`page=2` is a number, `name=pep` is the
@@ -199,7 +202,7 @@ Precedence, most specific first: a CLI flag, the `[[api]]` entry, the file's top
 never instead of them, and `--api recipes` narrows the run to the entries you name:
 
 ```bash
-openapi-as-mcp list --api recipes          # one document out of the file
+openapi-cli list --api recipes             # one document out of the file
 openapi-as-mcp serve --api recipes --api billing
 ```
 
@@ -265,9 +268,10 @@ An MCP client entry can then be one line of arguments:
 ## Development
 
 ```bash
-cargo test -p openapi-as-mcp
+cargo test --workspace
 ```
 
-`tests/protocol.rs` and `tests/cli.rs` drive the built binary against a mock API — the protocol
-test is the one that catches a stray `println!`, which would corrupt the stdio JSON-RPC stream.
-`tests/no_stdout.rs` guards the same thing statically.
+`tests/protocol.rs` here and `crates/openapi-cli/tests/cli.rs` drive the built binaries against a
+mock API — the protocol test is the one that catches a stray `println!`, which would corrupt the
+stdio JSON-RPC stream. `tests/no_stdout.rs` guards the same thing statically, over this crate and
+`openapi-core`.

@@ -1,4 +1,4 @@
-BINARIES := openapi-as-mcp
+BINARIES := openapi-as-mcp openapi-cli
 INSTALL_DIR := $(HOME)/.local/bin
 
 .PHONY: install

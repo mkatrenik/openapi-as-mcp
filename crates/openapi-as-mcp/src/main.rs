@@ -1,54 +1,92 @@
-//! `openapi-as-mcp` — turn any OpenAPI 3.x document into an MCP tool set.
+//! `openapi-as-mcp` — serve any OpenAPI 3.x document as an MCP tool set.
 //!
-//! Point it at a spec and a base URL and every operation becomes a tool, named after its
-//! `operationId`, with a JSON Schema built from its parameters and request body. Nothing about the
-//! API is compiled in, so a new endpoint appears the moment the document does.
-//!
-//! Several documents can be served at once, each with its own base URL, credentials and filters —
-//! see `src/config.rs` for the TOML file that describes them.
+//! The document-to-tools work lives in `openapi-core`; this binary is only the MCP front end over
+//! it. To inspect or call the same tools from a shell, use `openapi-cli`.
 //!
 //! `serve` runs the MCP server. Its transport is stdio, which means **stdout belongs to the
-//! JSON-RPC protocol**: all diagnostics go to stderr, and a stray `println!` corrupts the stream.
-//! Every other subcommand is an ordinary CLI run — see `src/cli.rs`, the only module allowed to
-//! write there. A bare invocation prints help; the server must be asked for explicitly, so an MCP
-//! client entry has to end in `… serve`.
+//! JSON-RPC protocol**: all diagnostics go to stderr, and a stray `println!` corrupts the stream
+//! (`tests/no_stdout.rs` guards this). A bare invocation prints help; the server must be asked for
+//! explicitly, so an MCP client entry has to end in `… serve`.
 //!
 //! `serve --daemon` shares one server process between sessions — see `src/daemon.rs`.
 
-mod cli;
-mod config;
 // Unix sockets and `flock` have no drop-in Windows equivalent, so shared-daemon mode is Unix-only.
 #[cfg(unix)]
 mod daemon;
-mod exec;
-mod schema;
 mod server;
-mod spec;
 
 use std::io::IsTerminal;
 use std::process::ExitCode;
+#[cfg(unix)]
 use std::time::Duration;
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
+use openapi_core::config::ConfigArgs;
+use openapi_core::spec;
 use rmcp::{ServiceExt, transport::stdio};
 
-use crate::cli::{Cli, Command};
 use crate::server::OpenApiMcp;
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "openapi-as-mcp",
+    version,
+    about = "Serve any OpenAPI 3.x document as an MCP tool set",
+    long_about = "Serve any OpenAPI 3.x document as an MCP tool set.\n\n`serve` runs the MCP \
+                  server on stdio. To list, inspect or call the same tools from a shell, use \
+                  `openapi-cli`.",
+    // A bare invocation prints help rather than starting a server that waits silently on stdin:
+    // an MCP client entry that forgets `serve` then fails loudly instead of hanging.
+    arg_required_else_help = true
+)]
+struct Cli {
+    #[command(flatten)]
+    config: ConfigArgs,
+
+    /// Log filter, in `tracing` directive form (`info`, `openapi_core=debug`). Diagnostics always
+    /// go to stderr.
+    #[arg(long, value_name = "FILTER", default_value = "info", global = true)]
+    log: String,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Run the MCP server on stdio. This is how an MCP client launches the binary.
+    Serve(ServeArgs),
+}
+
+#[derive(Debug, Default, Args)]
+struct ServeArgs {
+    /// Share one server process between every session with the same configuration: this process
+    /// relays stdio to it, starting it first when it is not running.
+    #[arg(long)]
+    daemon: bool,
+
+    /// With --daemon: seconds the shared server stays up with no sessions before exiting. 0 keeps
+    /// it running until killed.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_value_t = 300,
+        requires = "daemon"
+    )]
+    idle_timeout: u64,
+
+    /// Internal: run as the shared server itself. Added by the relay when it starts one.
+    #[arg(long = "daemon-host", hide = true, requires = "daemon")]
+    daemon_host: bool,
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<ExitCode> {
     let cli = Cli::parse();
 
-    // In CLI mode the default is quiet: the result is the output, and a failed call already prints
-    // its message to stderr — logging it too would just print everything twice. `--log` turns
-    // logging back on.
-    let default_level = if cli.is_serve() { "info" } else { "error" };
-    let filter = match cli.output.log.as_deref() {
-        Some(directives) => tracing_subscriber::EnvFilter::try_new(directives)
-            .context("--log is not a valid tracing filter")?,
-        None => tracing_subscriber::EnvFilter::new(default_level),
-    };
+    let filter = tracing_subscriber::EnvFilter::try_new(&cli.log)
+        .context("--log is not a valid tracing filter")?;
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         // Colour only for a person watching: the shared daemon's stderr is a log file.
@@ -56,9 +94,7 @@ async fn main() -> anyhow::Result<ExitCode> {
         .with_env_filter(filter)
         .init();
 
-    let Command::Serve(serve) = &cli.command else {
-        return cli::run(cli).await;
-    };
+    let Command::Serve(serve) = &cli.command;
 
     let config = cli.config.resolve().context("invalid configuration")?;
     #[cfg(unix)]
