@@ -13,7 +13,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn spec() -> String {
     format!(
-        "{}/tests/fixtures/recipes.openapi.yaml",
+        "{}/../openapi-core/tests/fixtures/recipes.openapi.yaml",
         env!("CARGO_MANIFEST_DIR")
     )
 }
@@ -24,7 +24,7 @@ fn args(value: Value) -> rmcp::model::JsonObject {
 
 /// Spawn the built binary in server mode, pointed at a mock API.
 async fn spawn(base_url: &str) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_openapi-as-mcp"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_openapi-mcp"));
     command
         // The server is opt-in: without `serve` the binary prints help and exits.
         .arg("serve")
@@ -80,7 +80,7 @@ async fn stateless_clients_get_cache_hints_on_the_tool_list() {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_openapi-as-mcp"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_openapi-mcp"))
         .args(["serve", "--spec", &spec(), "--base-url", "http://unused"])
         .args(["--log", "warn", "--config", ""])
         .stdin(Stdio::piped())
@@ -247,7 +247,7 @@ async fn an_upstream_failure_is_a_tool_error_the_model_can_read() {
 #[tokio::test]
 async fn read_only_mode_hides_the_write_operations() {
     let api = MockServer::start().await;
-    let mut command = Command::new(env!("CARGO_BIN_EXE_openapi-as-mcp"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_openapi-mcp"));
     command
         .arg("serve")
         .arg("--read-only")
@@ -282,7 +282,7 @@ async fn spawn_relay(
     base_url: &str,
     runtime_dir: &std::path::Path,
 ) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_openapi-as-mcp"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_openapi-mcp"));
     command
         .args(["serve", "--daemon", "--idle-timeout", "1"])
         .args(["--spec", &spec()])
@@ -310,7 +310,7 @@ async fn daemon_mode_serves_concurrent_sessions_from_one_host_that_exits_when_id
     let port = api.address().port();
     let root = std::path::PathBuf::from(format!("/tmp/oam-test-{port}"));
     let _ = std::fs::remove_dir_all(&root);
-    let runtime = root.join("openapi-as-mcp");
+    let runtime = root.join("openapi-mcp");
 
     // Started together, so both relays race to spawn a host; the lock must leave exactly one.
     let uri = api.uri();
@@ -363,4 +363,16 @@ async fn daemon_mode_serves_concurrent_sessions_from_one_host_that_exits_when_id
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn a_bare_invocation_prints_help_rather_than_starting_the_server() {
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_openapi-mcp"))
+        .output()
+        .await
+        .expect("binary runs");
+
+    assert!(!output.status.success());
+    let help = String::from_utf8_lossy(&output.stderr);
+    assert!(help.contains("serve"), "help must mention serve: {help}");
 }

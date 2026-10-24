@@ -1,0 +1,16 @@
+[package]
+name = "openapi-cli"
+version.workspace = true
+edition.workspace = true
+description = "List, inspect and call the operations of any OpenAPI 3.x document from a shell"
+
+[dependencies]
+openapi-core = { path = "../openapi-core" }
+clap = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+wiremock = { workspace = true }

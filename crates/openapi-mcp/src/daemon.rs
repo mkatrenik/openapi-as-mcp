@@ -30,14 +30,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
+use openapi_core::config::Config;
+use openapi_core::spec;
 use rmcp::ServiceExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
-use crate::config::Config;
 use crate::server::OpenApiMcp;
-use crate::spec;
 
 /// The hidden `serve` flag that turns a re-executed relay into the host. It is appended to the
 /// relay's own argv, so the host resolves exactly the configuration the relay did.
@@ -88,10 +88,10 @@ impl Paths {
 /// the system temp dir. Kept short on purpose: a Unix socket path is limited to ~104 bytes.
 fn runtime_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
-        return PathBuf::from(dir).join("openapi-as-mcp");
+        return PathBuf::from(dir).join("openapi-mcp");
     }
     let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
-    std::env::temp_dir().join(format!("openapi-as-mcp-{user}"))
+    std::env::temp_dir().join(format!("openapi-mcp-{user}"))
 }
 
 /// Runs the relay: connects to (or starts) the host for `config`, then copies stdin to the socket

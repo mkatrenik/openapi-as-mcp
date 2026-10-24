@@ -1,24 +1,18 @@
 [package]
-name = "openapi-as-mcp"
+name = "openapi-mcp"
 version.workspace = true
 edition.workspace = true
 description = "Serve any OpenAPI 3.x document as an MCP tool set"
 
 [dependencies]
+openapi-core = { path = "../openapi-core" }
 rmcp = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true, features = ["net", "io-util", "sync"] }
-serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
-toml = { workspace = true }
-reqwest = { workspace = true }
-thiserror = { workspace = true }
 anyhow = { workspace = true }
-regex = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-urlencoding = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }

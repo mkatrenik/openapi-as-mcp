@@ -1,4 +1,4 @@
-# openapi-as-mcp
+# openapi-mcp
 
 Turn any OpenAPI 3.x document into an MCP tool set. Point it at a spec and a base URL; every
 operation in the document becomes a tool, named after its `operationId`, with a JSON Schema built
@@ -12,24 +12,27 @@ write a real server instead.
 ## Install
 
 ```bash
-cargo install --path crates/openapi-as-mcp
+cargo install --path crates/openapi-mcp
+cargo install --path crates/openapi-cli
 ```
 
-Installs the `openapi-as-mcp` binary to `~/.cargo/bin` (make sure it's on `PATH`). Run from the
-workspace root, or point `--path` at the crate directory from wherever you are.
+Installs the `openapi-mcp` (MCP server) and `openapi-cli` (shell) binaries to `~/.cargo/bin`
+(make sure it's on `PATH`). Run from the workspace root, or point `--path` at the crate directory
+from wherever you are. Both are built on `openapi-core`, take the same flags and read the same
+config file, so `openapi-cli` shows exactly the tools the server serves.
 
 Or straight from GitHub, without cloning first:
 
 ```bash
-cargo install --git https://github.com/mkatrenik/openapi-as-mcp openapi-as-mcp
+cargo install --git https://github.com/mkatrenik/openapi-tools openapi-mcp openapi-cli
 ```
 
-The package name after the URL is required since the repo is a workspace with more than one crate.
+The package names after the URL are required since the repo is a workspace with more than one crate.
 
 ## Quick start
 
 ```bash
-cargo run -p openapi-as-mcp -- list \
+cargo run -p openapi-cli -- list \
   --spec https://api.example.com/openapi.json \
   --base-url https://api.example.com
 ```
@@ -37,8 +40,8 @@ cargo run -p openapi-as-mcp -- list \
 `list` prints one line of JSON per tool. Then look at one, and call it:
 
 ```bash
-openapi-as-mcp schema listRecipes --spec ./openapi.yaml
-openapi-as-mcp call listRecipes -a page=2 -a 'state=["failed"]' --spec ./openapi.yaml
+openapi-cli schema listRecipes --spec ./openapi.yaml
+openapi-cli call listRecipes -a page=2 -a 'state=["failed"]' --spec ./openapi.yaml
 ```
 
 `-a name=value` parses the value as JSON when it parses (`page=2` is a number, `name=pep` is the
@@ -54,7 +57,7 @@ argument object at once.
 {
   "mcpServers": {
     "recipes": {
-      "command": "openapi-as-mcp",
+      "command": "openapi-mcp",
       "args": [
         "serve",
         "--spec",
@@ -78,7 +81,7 @@ A client starts one server per session, so five agent sessions mean five process
 the same documents. Add `--daemon` to share one instead:
 
 ```json
-"args": ["serve", "--daemon", "--config", "/path/to/openapi-as-mcp.toml"]
+"args": ["serve", "--daemon", "--config", "/path/to/openapi-tools.toml"]
 ```
 
 The launched process becomes a thin relay between its stdio and a Unix socket. Behind the socket
@@ -91,8 +94,8 @@ end up with a single server.
 The server exits after `--idle-timeout` seconds with no sessions (default 300; `0` keeps it
 running), which is also how it picks up a changed document: the next session after that starts a
 fresh one. It keeps the environment of the session that started it, which matters for `${VAR}`
-and `token_command`. Its socket, lock and log live in `$XDG_RUNTIME_DIR/openapi-as-mcp/`, or
-`$TMPDIR/openapi-as-mcp-$USER/` when that is unset; a server that fails to start reports the end of
+and `token_command`. Its socket, lock and log live in `$XDG_RUNTIME_DIR/openapi-mcp/`, or
+`$TMPDIR/openapi-mcp-$USER/` when that is unset; a server that fails to start reports the end of
 its log through the relay. Unix only.
 
 ## What the mapping looks like
@@ -138,7 +141,7 @@ _tool-level_ error carrying the upstream message, so the model can read it and t
 | `--include` / `--exclude` | regexes, matched against the tool name, the method and the path independently       |
 | `--tool-prefix`           | keeps two of these apart in one client                                              |
 | `--timeout`               | per-request, in seconds (default 60)                                                |
-| `--max-response-bytes`    | ceiling on one response (default 256 KiB)                                           |
+| `--max-response-bytes`    | ceiling on one response (default 256 KiB; `openapi-cli` has no default)             |
 | `--log`                   | log filter; diagnostics always go to stderr                                         |
 | `--daemon`                | `serve` only: share one server process between sessions — see above                 |
 | `--idle-timeout`          | with `--daemon`: seconds without sessions before the shared server exits (300)      |
@@ -153,8 +156,8 @@ a collision becomes `listRecipes_2` rather than a lost tool. Flags apply to all 
 fine when the documents share a host and a token.
 
 When they do not, describe them in a config file instead: each `[[api]]` gets its own base URL,
-credentials, filters and prefix. `--config <path>`, or `./openapi-as-mcp.toml` and
-`~/.config/openapi-as-mcp/config.toml`, which are picked up automatically.
+credentials, filters and prefix. `--config <path>`, or `./openapi-tools.toml` and
+`~/.config/openapi-tools/config.toml`, which are picked up automatically.
 
 ```toml
 # Defaults for every api below.
@@ -199,8 +202,8 @@ Precedence, most specific first: a CLI flag, the `[[api]]` entry, the file's top
 never instead of them, and `--api recipes` narrows the run to the entries you name:
 
 ```bash
-openapi-as-mcp list --api recipes          # one document out of the file
-openapi-as-mcp serve --api recipes --api billing
+openapi-cli list --api recipes             # one document out of the file
+openapi-mcp serve --api recipes --api billing
 ```
 
 ### Groups
@@ -235,8 +238,8 @@ base_url = "https://recipes.stg.internal"
 ```
 
 ```bash
-openapi-as-mcp serve --group prod        # one environment
-openapi-as-mcp serve                     # every group, plus any ungrouped [[api]]
+openapi-mcp serve --group prod        # one environment
+openapi-mcp serve                     # every group, plus any ungrouped [[api]]
 ```
 
 A grouped entry is named `prod/recipes` in logs and errors, so one name may be reused in every
@@ -254,8 +257,8 @@ An MCP client entry can then be one line of arguments:
 {
   "mcpServers": {
     "apis": {
-      "command": "openapi-as-mcp",
-      "args": ["serve", "--config", "/path/to/openapi-as-mcp.toml"],
+      "command": "openapi-mcp",
+      "args": ["serve", "--config", "/path/to/openapi-tools.toml"],
       "env": { "RECIPES_TOKEN": "…", "BILLING_KEY": "…" }
     }
   }
@@ -265,9 +268,10 @@ An MCP client entry can then be one line of arguments:
 ## Development
 
 ```bash
-cargo test -p openapi-as-mcp
+cargo test --workspace
 ```
 
-`tests/protocol.rs` and `tests/cli.rs` drive the built binary against a mock API — the protocol
-test is the one that catches a stray `println!`, which would corrupt the stdio JSON-RPC stream.
-`tests/no_stdout.rs` guards the same thing statically.
+`tests/protocol.rs` here and `crates/openapi-cli/tests/cli.rs` drive the built binaries against a
+mock API — the protocol test is the one that catches a stray `println!`, which would corrupt the
+stdio JSON-RPC stream. `tests/no_stdout.rs` guards the same thing statically, over this crate and
+`openapi-core`.

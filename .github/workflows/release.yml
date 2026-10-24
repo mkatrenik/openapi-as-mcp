@@ -14,7 +14,12 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  BIN_NAME: openapi-as-mcp
+  # Names the release archives.
+  ARCHIVE_NAME: openapi-tools
+  # The crate the version is read from; every crate shares the workspace version, so any would do.
+  VERSION_CRATE: openapi-mcp
+  # Every binary shipped in the archive.
+  BINARIES: openapi-mcp openapi-cli
 
 jobs:
   build:
@@ -68,9 +73,9 @@ jobs:
         run: |
           set -euo pipefail
           version=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r --arg name "$BIN_NAME" '.packages[] | select(.name == $name) | .version')
+            | jq -r --arg name "$VERSION_CRATE" '.packages[] | select(.name == $name) | .version')
           if [[ -z "$version" ]]; then
-            echo "could not read the version of $BIN_NAME from Cargo.toml" >&2
+            echo "could not read the version of $VERSION_CRATE from Cargo.toml" >&2
             exit 1
           fi
           # On a tag build, refuse to publish a mismatch: a tag of v0.2.0 built from a manifest
@@ -96,15 +101,18 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
-          stem="${BIN_NAME}-${version}-${{ matrix.target }}"
+          stem="${ARCHIVE_NAME}-${version}-${{ matrix.target }}"
           mkdir -p "dist/${stem}"
           cp README.md "dist/${stem}/"
+          ext=""
+          if [[ "${{ matrix.target }}" == *windows* ]]; then ext=".exe"; fi
+          for binary in $BINARIES; do
+            cp "target/${{ matrix.target }}/release/${binary}${ext}" "dist/${stem}/"
+          done
           if [[ "${{ matrix.target }}" == *windows* ]]; then
-            cp "target/${{ matrix.target }}/release/${BIN_NAME}.exe" "dist/${stem}/"
             (cd dist && 7z a -tzip "${stem}.zip" "${stem}" >/dev/null)
             echo "asset=dist/${stem}.zip" >> "$GITHUB_OUTPUT"
           else
-            cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${stem}/"
             (cd dist && tar czf "${stem}.tar.gz" "${stem}")
             echo "asset=dist/${stem}.tar.gz" >> "$GITHUB_OUTPUT"
           fi

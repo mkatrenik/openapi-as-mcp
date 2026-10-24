@@ -1,21 +1,14 @@
-//! The MCP surface: one tool per OpenAPI operation.
+//! The tool set: one tool per OpenAPI operation, across every configured document.
 //!
-//! Unlike a hand-written server, the tool list is not known at compile time, so [`ServerHandler`]
-//! is implemented directly instead of through the `#[tool]` macros: `list_tools` returns a vector
-//! built at startup and `call_tool` dispatches by name.
+//! This is the part both front ends share — `openapi-mcp` serves it over MCP, `openapi-cli`
+//! drives it from a shell — so naming, filtering and the request path cannot drift between them.
+//! It deliberately knows nothing about MCP: a front end turns [`ToolSet::operations`] into
+//! whatever its protocol calls a tool.
 
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::Arc;
 
 use anyhow::{Context, bail};
-use rmcp::ServerHandler;
-use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData as McpError,
-    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
-    ToolAnnotations,
-};
-use rmcp::service::{RequestContext, RoleServer};
 use serde_json::{Map, Value, json};
 
 use crate::config::{ApiConfig, Config};
@@ -31,18 +24,20 @@ struct Bound {
 }
 
 #[derive(Debug)]
-pub struct OpenApiMcp {
+pub struct ToolSet {
     /// Parallel to the documents, in config order.
     executors: Vec<Executor>,
-    tools: Vec<Tool>,
+    /// Tool names in serving order: config order, then document order. `operations` is the
+    /// lookup; this keeps listings stable.
+    order: Vec<String>,
     operations: HashMap<String, Bound>,
     instructions: String,
 }
 
-impl OpenApiMcp {
-    /// Builds the server from already-loaded documents, one per `config.apis` in the same order.
-    /// Fails only for things that make the whole server useless: a document with no base URL to
-    /// send its requests to, or no operations left after filtering.
+impl ToolSet {
+    /// Builds the tool set from already-loaded documents, one per `config.apis` in the same
+    /// order. Fails only for things that make the whole set useless: a document with no base URL
+    /// to send its requests to, or no operations left after filtering.
     pub fn new(config: &Config, apis: Vec<Api>) -> anyhow::Result<Self> {
         assert_eq!(
             config.apis.len(),
@@ -53,7 +48,7 @@ impl OpenApiMcp {
         // Names are unique per document; two documents can still collide, so dedupe again here.
         let mut taken: BTreeMap<String, usize> = BTreeMap::new();
         let mut operations = HashMap::new();
-        let mut tools = Vec::new();
+        let mut order = Vec::new();
         let mut executors = Vec::with_capacity(apis.len());
         let mut skipped = 0usize;
 
@@ -67,7 +62,7 @@ impl OpenApiMcp {
                 }
                 let mut operation = operation.clone();
                 operation.name = capped(unique(prefixed(settings, &operation.name), &mut taken));
-                tools.push(tool_for(&operation));
+                order.push(operation.name.clone());
                 operations.insert(
                     operation.name.clone(),
                     Bound {
@@ -87,29 +82,41 @@ impl OpenApiMcp {
             executors.push(Executor::new(settings, base_url)?);
         }
 
-        if tools.is_empty() {
+        if order.is_empty() {
             bail!(
                 "no operations to serve: {} found, all filtered out by read-only/include/exclude",
                 skipped
             );
         }
         tracing::info!(
-            tools = tools.len(),
+            tools = order.len(),
             skipped,
             apis = apis.len(),
             "built tool set"
         );
 
         Ok(Self {
-            instructions: instructions(config, &apis, &tools),
+            instructions: instructions(config, &apis, order.len()),
             executors,
-            tools,
+            order,
             operations,
         })
     }
 
-    pub fn tools(&self) -> &[Tool] {
-        &self.tools
+    /// Every tool's operation, in serving order. `Operation::name` is the final tool name, with
+    /// prefixes, collision suffixes and length capping already applied.
+    pub fn operations(&self) -> impl Iterator<Item = &Operation> {
+        self.order
+            .iter()
+            .map(|name| &self.operations[name].operation)
+    }
+
+    pub fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.order.is_empty()
     }
 
     pub fn operation(&self, name: &str) -> Option<&Operation> {
@@ -127,30 +134,57 @@ impl OpenApiMcp {
         self.executors.iter().map(Executor::base_url).collect()
     }
 
-    /// Runs one tool. Shared by the MCP handler and the CLI so the two can never drift.
-    pub async fn call(&self, name: &str, arguments: Map<String, Value>) -> CallToolResult {
+    /// A paragraph saying what this tool set is a front for, because "getRecipe" on its own does
+    /// not tell an agent which API it is talking to. The MCP server sends it at initialize.
+    pub fn instructions(&self) -> &str {
+        &self.instructions
+    }
+
+    /// Runs one tool and returns the response payload.
+    ///
+    /// `Err` is a ready-to-show message, not a typed error: everything that can go wrong here —
+    /// an unknown name, a 404, a stale token — is something the caller (a model or a person)
+    /// fixes by reading it, so both front ends just display it.
+    pub async fn call(&self, name: &str, arguments: Map<String, Value>) -> Result<Value, String> {
         let Some(bound) = self.operations.get(name) else {
-            let mut known: Vec<&str> = self.operations.keys().map(String::as_str).collect();
+            let mut known: Vec<&str> = self.order.iter().map(String::as_str).collect();
             known.sort_unstable();
-            return CallToolResult::error(vec![ContentBlock::text(format!(
+            return Err(format!(
                 "unknown tool {name:?}. Available: {}",
                 known.join(", ")
-            ))]);
+            ));
         };
 
-        match self.executors[bound.api]
+        self.executors[bound.api]
             .call(&bound.operation, &arguments)
             .await
-        {
-            Ok(payload) => CallToolResult::structured(payload),
-            // Everything the upstream API can do to us — a 404, a stale token, a bad argument —
-            // is a *tool-level* error: the model should read the message and try again, not see
-            // an opaque protocol failure.
-            Err(err) => {
+            .map_err(|err| {
                 tracing::warn!(tool = name, error = %err, "tool call failed");
-                CallToolResult::error(vec![ContentBlock::text(describe_error(&err))])
-            }
-        }
+                describe_error(&err)
+            })
+    }
+
+    /// A one-entry-per-tool listing, for `openapi-cli list`.
+    pub fn describe(&self) -> Value {
+        let tools: Vec<Value> = self
+            .operations()
+            .map(|operation| {
+                json!({
+                    "name": operation.name,
+                    "base_url": self.base_url_of(&operation.name).unwrap_or(""),
+                    "method": operation.method,
+                    "path": operation.path,
+                    "read_only": operation.is_read_only(),
+                    "summary": operation.description.lines().next().unwrap_or(""),
+                })
+            })
+            .collect();
+
+        json!({
+            "base_urls": self.base_urls(),
+            "count": tools.len(),
+            "tools": tools,
+        })
     }
 }
 
@@ -162,8 +196,8 @@ fn describe_error(err: &CallError) -> String {
                 || *status == reqwest::StatusCode::FORBIDDEN =>
         {
             Some(
-                "The API rejected the credentials. Restart the server with --token <TOKEN>, or \
-                 fix this API's `token` in the config file.",
+                "The API rejected the credentials. Pass --token <TOKEN> (restarting the server if \
+                 this is MCP), or fix this API's `token` in the config file.",
             )
         }
         CallError::Transport { .. } => Some(
@@ -243,30 +277,6 @@ fn capped(name: String) -> String {
     format!("{head}_{hash}")
 }
 
-fn tool_for(operation: &Operation) -> Tool {
-    let read_only = operation.is_read_only();
-    Tool::new(
-        operation.name.clone(),
-        operation.description.clone(),
-        Arc::new(operation.input_schema.clone()),
-    )
-    .annotate(
-        ToolAnnotations::new()
-            .read_only(read_only)
-            // DELETE removes something; PUT and PATCH overwrite in place. POST is the additive
-            // one, so it is the only write method that is not flagged destructive.
-            .destructive(matches!(
-                operation.method.as_str(),
-                "DELETE" | "PUT" | "PATCH"
-            ))
-            .idempotent(matches!(
-                operation.method.as_str(),
-                "GET" | "HEAD" | "OPTIONS" | "PUT" | "DELETE"
-            ))
-            .open_world(true),
-    )
-}
-
 /// A document's base URL: its own setting first, then what the document declares. Named in the
 /// error, because with several documents "no base URL" has to say *which*.
 fn base_url_for(settings: &ApiConfig, api: &Api) -> anyhow::Result<String> {
@@ -283,9 +293,7 @@ fn base_url_for(settings: &ApiConfig, api: &Api) -> anyhow::Result<String> {
         })
 }
 
-/// Shown to the client once, at initialize. Says what this server is a front for, because
-/// "getRecipe" on its own does not tell an agent which API it is talking to.
-fn instructions(config: &Config, apis: &[Api], tools: &[Tool]) -> String {
+fn instructions(config: &Config, apis: &[Api], tool_count: usize) -> String {
     let mut text = String::from(
         "Each tool is one operation of an OpenAPI document, called over HTTP. Parameters are \
          flat: path, query, header and cookie parameters are all top-level arguments, and a \
@@ -301,65 +309,8 @@ fn instructions(config: &Config, apis: &[Api], tools: &[Tool]) -> String {
         });
         text.push_str(&format!("- {} {} at {base_url}\n", api.title, api.version));
     }
-    text.push_str(&format!("\n{} tools.", tools.len()));
+    text.push_str(&format!("\n{tool_count} tools."));
     text
-}
-
-impl ServerHandler for OpenApiMcp {
-    fn get_info(&self) -> ServerConfig {
-        let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
-        info.instructions = Some(self.instructions.clone());
-        info
-    }
-
-    async fn list_tools(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, McpError> {
-        // The whole set fits in one page: even a large spec is a few hundred tools, and paging
-        // would only give clients a chance to stop halfway through.
-        Ok(ListToolsResult::with_all_items(self.tools.clone()))
-    }
-
-    fn get_tool(&self, name: &str) -> Option<Tool> {
-        self.tools.iter().find(|tool| tool.name == name).cloned()
-    }
-
-    async fn call_tool(
-        &self,
-        request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResponse, McpError> {
-        let arguments = request.arguments.unwrap_or_default();
-        Ok(self.call(&request.name, arguments).await.into())
-    }
-}
-
-/// A one-line-per-tool listing, for `openapi-as-mcp list`.
-pub fn describe_tools(server: &OpenApiMcp) -> Value {
-    let tools: Vec<Value> = server
-        .tools()
-        .iter()
-        .map(|tool| {
-            let operation = server.operation(&tool.name).expect("tool has an operation");
-            json!({
-                "name": tool.name,
-                "base_url": server.base_url_of(&tool.name).unwrap_or(""),
-                "method": operation.method,
-                "path": operation.path,
-                "read_only": operation.is_read_only(),
-                "summary": tool.description.as_deref().unwrap_or("")
-                    .lines().next().unwrap_or(""),
-            })
-        })
-        .collect();
-
-    json!({
-        "base_urls": server.base_urls(),
-        "count": tools.len(),
-        "tools": tools,
-    })
 }
 
 #[cfg(test)]
@@ -386,39 +337,39 @@ mod tests {
       }
     }"#;
 
-    fn server(args: ConfigArgs) -> anyhow::Result<OpenApiMcp> {
+    fn tool_set(args: ConfigArgs) -> anyhow::Result<ToolSet> {
         let config = ConfigArgs {
             specs: vec!["unused.json".into()],
             ..args
         }
         .resolve()?;
-        OpenApiMcp::new(&config, vec![parse(SPEC, "test").expect("parses")])
+        ToolSet::new(&config, vec![parse(SPEC, "test").expect("parses")])
     }
 
-    fn base_url(server: &OpenApiMcp) -> String {
-        server.base_urls().join(", ")
+    fn base_url(tools: &ToolSet) -> String {
+        tools.base_urls().join(", ")
     }
 
-    fn names(server: &OpenApiMcp) -> Vec<String> {
-        let mut names: Vec<String> = server.tools().iter().map(|t| t.name.to_string()).collect();
+    fn names(tools: &ToolSet) -> Vec<String> {
+        let mut names: Vec<String> = tools.operations().map(|op| op.name.clone()).collect();
         names.sort();
         names
     }
 
     #[test]
     fn the_base_url_falls_back_to_the_documents_first_server() {
-        let server = server(ConfigArgs::default()).expect("builds");
-        assert_eq!(base_url(&server), "https://api.example.com/v1");
+        let tools = tool_set(ConfigArgs::default()).expect("builds");
+        assert_eq!(base_url(&tools), "https://api.example.com/v1");
     }
 
     #[test]
     fn an_explicit_base_url_wins_over_the_document() {
-        let server = server(ConfigArgs {
+        let tools = tool_set(ConfigArgs {
             base_url: Some("http://localhost:8080".into()),
             ..ConfigArgs::default()
         })
         .expect("builds");
-        assert_eq!(base_url(&server), "http://localhost:8080");
+        assert_eq!(base_url(&tools), "http://localhost:8080");
     }
 
     #[test]
@@ -431,7 +382,7 @@ mod tests {
         .expect("resolves");
         let api = parse(r#"{"paths": {"/a": {"get": {}}}}"#, "test").expect("parses");
 
-        let err = OpenApiMcp::new(&config, vec![api]).expect_err("no base URL");
+        let err = ToolSet::new(&config, vec![api]).expect_err("no base URL");
         let message = format!("{err:#}");
         assert!(message.contains("base_url"), "got: {message}");
         assert!(
@@ -442,42 +393,42 @@ mod tests {
 
     #[test]
     fn read_only_keeps_only_safe_methods() {
-        let server = server(ConfigArgs {
+        let tools = tool_set(ConfigArgs {
             read_only: true,
             ..ConfigArgs::default()
         })
         .expect("builds");
-        assert_eq!(names(&server), vec!["listRecipes"]);
+        assert_eq!(names(&tools), vec!["listRecipes"]);
     }
 
     #[test]
     fn exclude_matches_the_path_as_well_as_the_name() {
-        let server = server(ConfigArgs {
+        let tools = tool_set(ConfigArgs {
             exclude: vec!["^/admin".into()],
             ..ConfigArgs::default()
         })
         .expect("builds");
-        assert!(!names(&server).contains(&"purge".to_string()));
-        assert!(names(&server).contains(&"listRecipes".to_string()));
+        assert!(!names(&tools).contains(&"purge".to_string()));
+        assert!(names(&tools).contains(&"listRecipes".to_string()));
     }
 
     #[test]
     fn include_is_applied_before_exclude() {
-        let server = server(ConfigArgs {
+        let tools = tool_set(ConfigArgs {
             include: vec!["Recipe".into()],
             exclude: vec!["delete".into()],
             ..ConfigArgs::default()
         })
         .expect("builds");
         assert_eq!(
-            names(&server),
+            names(&tools),
             vec!["createRecipe", "listRecipes", "replaceRecipe"]
         );
     }
 
     #[test]
-    fn filtering_everything_out_is_a_startup_error_rather_than_an_empty_server() {
-        let err = server(ConfigArgs {
+    fn filtering_everything_out_is_a_startup_error_rather_than_an_empty_set() {
+        let err = tool_set(ConfigArgs {
             include: vec!["nothing-matches-this".into()],
             ..ConfigArgs::default()
         })
@@ -487,13 +438,13 @@ mod tests {
 
     #[test]
     fn a_prefix_is_applied_to_every_tool_name() {
-        let server = server(ConfigArgs {
+        let tools = tool_set(ConfigArgs {
             tool_prefix: Some("recipes_".into()),
             read_only: true,
             ..ConfigArgs::default()
         })
         .expect("builds");
-        assert_eq!(names(&server), vec!["recipes_listRecipes"]);
+        assert_eq!(names(&tools), vec!["recipes_listRecipes"]);
     }
 
     #[test]
@@ -507,11 +458,11 @@ mod tests {
         let one = parse(SPEC, "one").expect("parses");
         let two = parse(SPEC, "two").expect("parses");
 
-        let server = OpenApiMcp::new(&config, vec![one, two]).expect("builds");
-        let names = names(&server);
+        let tools = ToolSet::new(&config, vec![one, two]).expect("builds");
+        let names = names(&tools);
         assert!(names.contains(&"listRecipes".to_string()));
         assert!(names.contains(&"listRecipes_2".to_string()));
-        assert_eq!(server.tools().len(), 10);
+        assert_eq!(tools.len(), 10);
     }
 
     #[test]
@@ -544,7 +495,7 @@ mod tests {
             "and does not leak to the next api"
         );
 
-        let server = OpenApiMcp::new(
+        let tools = ToolSet::new(
             &config,
             vec![
                 parse(SPEC, "one").expect("parses"),
@@ -554,20 +505,20 @@ mod tests {
         .expect("builds");
 
         assert_eq!(
-            server.base_urls(),
+            tools.base_urls(),
             vec!["https://one.example.com", "https://two.example.com"]
         );
         assert_eq!(
-            server.base_url_of("listRecipes"),
+            tools.base_url_of("listRecipes"),
             Some("https://one.example.com")
         );
         assert_eq!(
-            server.base_url_of("two_listRecipes"),
+            tools.base_url_of("two_listRecipes"),
             Some("https://two.example.com"),
             "the second document is reached through its prefix, with no name collision"
         );
         // read_only kept one tool from the first document; the second contributes all five.
-        assert_eq!(server.tools().len(), 6);
+        assert_eq!(tools.len(), 6);
     }
 
     #[test]
@@ -585,46 +536,21 @@ mod tests {
         assert_ne!(one, two, "a shared head must not merge two tools");
     }
 
-    #[test]
-    fn annotations_describe_what_each_method_does() {
-        let server = server(ConfigArgs::default()).expect("builds");
-        let annotations = |name: &str| {
-            server
-                .get_tool(name)
-                .expect("tool exists")
-                .annotations
-                .expect("annotated")
-        };
-
-        assert_eq!(annotations("listRecipes").read_only_hint, Some(true));
-        assert_eq!(annotations("deleteRecipe").read_only_hint, Some(false));
-        assert_eq!(annotations("deleteRecipe").destructive_hint, Some(true));
-        assert_eq!(
-            annotations("createRecipe").destructive_hint,
-            Some(false),
-            "POST is additive"
-        );
-        assert_eq!(annotations("replaceRecipe").idempotent_hint, Some(true));
-    }
-
     #[tokio::test]
     async fn calling_an_unknown_tool_lists_the_real_ones() {
-        let server = server(ConfigArgs::default()).expect("builds");
-        let result = server.call("nope", Map::new()).await;
-
-        assert_eq!(result.is_error, Some(true));
-        let text = result.content[0].as_text().expect("text").text.clone();
-        assert!(text.contains("listRecipes"), "got: {text}");
+        let tools = tool_set(ConfigArgs::default()).expect("builds");
+        let err = tools.call("nope", Map::new()).await.expect_err("unknown");
+        assert!(err.contains("listRecipes"), "got: {err}");
     }
 
     #[test]
     fn the_listing_carries_the_request_line_for_every_tool() {
-        let server = server(ConfigArgs {
+        let tools = tool_set(ConfigArgs {
             read_only: true,
             ..ConfigArgs::default()
         })
         .expect("builds");
-        let listing = describe_tools(&server);
+        let listing = tools.describe();
 
         assert_eq!(listing["count"], 1);
         assert_eq!(listing["tools"][0]["method"], "GET");

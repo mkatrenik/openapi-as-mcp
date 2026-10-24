@@ -7,10 +7,11 @@ use std::path::Path;
 #[test]
 fn no_source_file_writes_to_stdout() {
     let mut offenders = Vec::new();
-    scan(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(),
-        &mut offenders,
-    );
+    // The server's own sources, and `openapi-core`, which runs inside the server process.
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for dir in [manifest.join("src"), manifest.join("../openapi-core/src")] {
+        scan(&dir, &mut offenders);
+    }
 
     assert!(
         offenders.is_empty(),
@@ -37,12 +38,6 @@ fn scan(dir: &Path, offenders: &mut Vec<String>) {
         if path.extension().is_none_or(|ext| ext != "rs") {
             continue;
         }
-        // The CLI owns stdout by design: in CLI mode there is no JSON-RPC stream to corrupt, and
-        // the server path never reaches this module. It is the one place printing is correct.
-        if path.file_name().is_some_and(|name| name == "cli.rs") {
-            continue;
-        }
-
         let content = fs::read_to_string(&path).expect("readable source file");
 
         // Test modules may print freely (cargo captures their stdout), so skip exactly the

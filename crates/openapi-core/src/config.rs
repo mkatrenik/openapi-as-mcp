@@ -28,15 +28,15 @@ const DEFAULT_TIMEOUT_SECONDS: u64 = 60;
 /// Looked at, in order, when `--config` is not given. A missing file here is not an error: the
 /// flags alone are still a complete configuration.
 const DISCOVERED_CONFIG_PATHS: [&str; 2] = [
-    "openapi-as-mcp.toml",
-    ".config/openapi-as-mcp/config.toml", // relative to $HOME
+    "openapi-tools.toml",
+    ".config/openapi-tools/config.toml", // relative to $HOME
 ];
 
 #[derive(Debug, Clone, Default, Args)]
 #[command(next_help_heading = "Configuration")]
 pub struct ConfigArgs {
-    /// TOML config file. Defaults to ./openapi-as-mcp.toml, then
-    /// ~/.config/openapi-as-mcp/config.toml.
+    /// TOML config file. Defaults to ./openapi-tools.toml, then
+    /// ~/.config/openapi-tools/config.toml.
     #[arg(long = "config", short = 'c', value_name = "PATH", global = true)]
     /// A `String` rather than a `PathBuf` because clap's path parser rejects an empty value, and
     /// `--config ""` is the explicit "no file, and do not go looking".
@@ -118,6 +118,13 @@ pub struct ConfigArgs {
     /// Ceiling on the response bytes one tool call may return.
     #[arg(long, value_name = "N", global = true)]
     pub max_response_bytes: Option<usize>,
+
+    /// Not a flag: set by a front end before `resolve` to drop the default response ceiling, so
+    /// an API with no `max_response_bytes` (flag or file) returns its whole body. The default
+    /// exists to protect a model's context window; a person at a shell piping into jq wants the
+    /// full response.
+    #[arg(skip)]
+    pub no_default_response_limit: bool,
 }
 
 /// One document and everything about how to call it.
@@ -133,7 +140,8 @@ pub struct ApiConfig {
     pub exclude: Vec<regex::Regex>,
     pub tool_prefix: Option<String>,
     pub timeout: Duration,
-    pub max_response_bytes: usize,
+    /// `None` means no ceiling: the whole body is returned.
+    pub max_response_bytes: Option<usize>,
     /// When set, run this shell command before every request and send its trimmed stdout as
     /// `Authorization: Bearer <output>`, replacing any static token/`Authorization` header.
     pub token_command: Option<String>,
@@ -521,7 +529,7 @@ impl ConfigArgs {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("could not read {}", path.display()))?;
         let mut settings: Settings = toml::from_str(&text)
-            .with_context(|| format!("{} is not a valid openapi-as-mcp config", path.display()))?;
+            .with_context(|| format!("{} is not a valid openapi-tools config", path.display()))?;
         settings
             .expand_env()
             .with_context(|| format!("in {}", path.display()))?;
@@ -674,7 +682,7 @@ impl ConfigArgs {
                 .or(entry.max_response_bytes)
                 .or(group.max_response_bytes)
                 .or(defaults.max_response_bytes)
-                .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES),
+                .or((!self.no_default_response_limit).then_some(DEFAULT_MAX_RESPONSE_BYTES)),
             token_command,
         })
     }
@@ -806,7 +814,7 @@ pub mod test_support {
     pub fn try_config_from_args(toml: &str, args: ConfigArgs) -> anyhow::Result<Config> {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
-            "openapi-as-mcp-{}-{}.toml",
+            "openapi-mcp-{}-{}.toml",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
@@ -835,6 +843,26 @@ mod tests {
 
     fn only(args: ConfigArgs) -> ApiConfig {
         args.resolve().expect("resolves").apis.remove(0)
+    }
+
+    #[test]
+    fn the_default_response_ceiling_can_be_dropped_but_an_explicit_one_still_applies() {
+        assert_eq!(
+            only(args()).max_response_bytes,
+            Some(DEFAULT_MAX_RESPONSE_BYTES)
+        );
+
+        let unlimited = ConfigArgs {
+            no_default_response_limit: true,
+            ..args()
+        };
+        assert_eq!(only(unlimited.clone()).max_response_bytes, None);
+
+        let explicit = ConfigArgs {
+            max_response_bytes: Some(100),
+            ..unlimited
+        };
+        assert_eq!(only(explicit).max_response_bytes, Some(100));
     }
 
     #[test]
@@ -1151,7 +1179,7 @@ mod tests {
     #[test]
     fn an_explicit_config_that_does_not_exist_is_an_error() {
         let err = ConfigArgs {
-            config: Some("/nonexistent/openapi-as-mcp.toml".into()),
+            config: Some("/nonexistent/openapi-tools.toml".into()),
             specs: vec!["a.json".into()],
             ..ConfigArgs::default()
         }
